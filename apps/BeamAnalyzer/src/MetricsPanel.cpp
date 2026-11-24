@@ -3,6 +3,7 @@
 #include <QFormLayout>
 #include <QFrame>
 #include <QLabel>
+#include <QSizePolicy>
 #include <QVBoxLayout>
 
 #include <cmath>
@@ -20,6 +21,7 @@ QString num(double v, char fmt = 'f', int prec = 3) {
 }  // namespace
 
 MetricsPanel::MetricsPanel(QWidget* parent) : QWidget(parent) {
+  setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Expanding);
   auto* root = new QVBoxLayout(this);
   root->setContentsMargins(8, 8, 8, 8);
   root->setSpacing(6);
@@ -97,6 +99,8 @@ MetricsPanel::MetricsPanel(QWidget* parent) : QWidget(parent) {
 QLabel* MetricsPanel::addRow(QFormLayout* form, const QString& name) {
   auto* value = new QLabel(QStringLiteral("—"));
   value->setTextInteractionFlags(Qt::TextSelectableByMouse);
+  value->setWordWrap(true);
+  value->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Preferred);
   value->setStyleSheet(QStringLiteral(
       "font-family: \"Cascadia Mono\", \"Consolas\", \"Sarasa Mono SC\", monospace;"
       "font-size: 12px; font-weight: 600;"));

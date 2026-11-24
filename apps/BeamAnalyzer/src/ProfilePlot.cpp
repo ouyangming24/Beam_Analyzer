@@ -2,6 +2,7 @@
 
 #include <QPainter>
 #include <QPaintEvent>
+#include <QSizePolicy>
 
 #include <algorithm>
 #include <cmath>
@@ -11,6 +12,7 @@ namespace beam::ui {
 ProfilePlot::ProfilePlot(QWidget* parent) : QWidget(parent) {
   setBackgroundRole(QPalette::Base);
   setAutoFillBackground(true);
+  setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
 }
 
 void ProfilePlot::setProfile(const beam::core::LineProfile& profile, const QString& title) {

@@ -3,6 +3,7 @@
 #include <QMouseEvent>
 #include <QPainter>
 #include <QPaintEvent>
+#include <QSizePolicy>
 
 #include <algorithm>
 
@@ -10,7 +11,9 @@ namespace beam::ui {
 
 ImageView::ImageView(QWidget* parent) : QLabel(parent) {
   setAlignment(Qt::AlignCenter);
-  setMinimumSize(480, 360);
+  setMinimumSize(160, 120);
+  setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
+  setScaledContents(false);
   setStyleSheet(QStringLiteral("QLabel { background: #1a1a1a; color: #ccc; }"));
   setMouseTracking(true);
 }

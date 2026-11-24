@@ -19,6 +19,7 @@
 #include <QFileDialog>
 #include <QFileInfo>
 #include <QFormLayout>
+#include <QFrame>
 #include <QGroupBox>
 #include <QHBoxLayout>
 #include <QKeySequence>
@@ -31,6 +32,7 @@
 #include <QScrollArea>
 #include <QSettings>
 #include <QSignalBlocker>
+#include <QSizePolicy>
 #include <QSlider>
 #include <QSplitter>
 #include <QStatusBar>
@@ -160,6 +162,7 @@ void MainWindow::rebuildUi() {
   connect(themeAction_, &QAction::triggered, this, &MainWindow::toggleTheme);
 
   auto* tool = addToolBar(QStringLiteral("主工具栏"));
+  tool->setObjectName(QStringLiteral("MainToolBar"));
   tool->setMovable(false);
   tool->setToolButtonStyle(Qt::ToolButtonTextOnly);
   tool->setIconSize({16, 16});
@@ -189,9 +192,23 @@ void MainWindow::rebuildUi() {
   tool->addSeparator();
   tool->addAction(themeAction_);
 
-  auto* mainSplit = new QSplitter(Qt::Horizontal);
+  // Host widget so the central area always expands to the full QMainWindow
+  // client width (avoids orphan dark gutter past the metrics dock on maximize).
+  auto* centralHost = new QWidget;
+  centralHost->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
+  auto* centralLayout = new QHBoxLayout(centralHost);
+  centralLayout->setContentsMargins(0, 0, 0, 0);
+  centralLayout->setSpacing(0);
+
+  auto* mainSplit = new QSplitter(Qt::Horizontal, centralHost);
+  mainSplit->setObjectName(QStringLiteral("MainSplitter"));
+  mainSplit->setChildrenCollapsible(false);
+  mainSplit->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
 
   auto* leftSplit = new QSplitter(Qt::Vertical);
+  leftSplit->setObjectName(QStringLiteral("LeftSplitter"));
+  leftSplit->setChildrenCollapsible(false);
+  leftSplit->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
   imageView_ = new ImageView;
   connect(imageView_, &ImageView::roiChanged, this, &MainWindow::onRoiChanged);
   connect(imageView_, &ImageView::crosshairChanged, this, &MainWindow::onCrosshairChanged);
@@ -199,10 +216,15 @@ void MainWindow::rebuildUi() {
 
   auto* scroll = new QScrollArea;
   scroll->setWidgetResizable(true);
+  scroll->setFrameShape(QFrame::NoFrame);
+  scroll->setHorizontalScrollBarPolicy(Qt::ScrollBarAsNeeded);
+  scroll->setVerticalScrollBarPolicy(Qt::ScrollBarAsNeeded);
+  scroll->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
   scroll->setWidget(imageView_);
   leftSplit->addWidget(scroll);
 
   auto* scrubRow = new QWidget;
+  scrubRow->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
   auto* scrubLayout = new QHBoxLayout(scrubRow);
   scrubLayout->setContentsMargins(6, 2, 6, 2);
   scrubLayout->addWidget(new QLabel(QStringLiteral("帧历史")));
@@ -217,12 +239,15 @@ void MainWindow::rebuildUi() {
   leftSplit->addWidget(scrubRow);
 
   auto* profiles = new QWidget;
+  profiles->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Preferred);
   auto* profilesLayout = new QHBoxLayout(profiles);
   profilesLayout->setContentsMargins(0, 0, 0, 0);
   hProfilePlot_ = new ProfilePlot;
   vProfilePlot_ = new ProfilePlot;
-  profilesLayout->addWidget(hProfilePlot_);
-  profilesLayout->addWidget(vProfilePlot_);
+  hProfilePlot_->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
+  vProfilePlot_->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
+  profilesLayout->addWidget(hProfilePlot_, 1);
+  profilesLayout->addWidget(vProfilePlot_, 1);
   leftSplit->addWidget(profiles);
   leftSplit->setStretchFactor(0, 5);
   leftSplit->setStretchFactor(1, 0);
@@ -230,6 +255,11 @@ void MainWindow::rebuildUi() {
   mainSplit->addWidget(leftSplit);
 
   auto* right = new QWidget;
+  right->setObjectName(QStringLiteral("ControlColumn"));
+  // Prefer a stable control width; image column absorbs extra horizontal space.
+  right->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Expanding);
+  right->setMinimumWidth(260);
+  right->setMaximumWidth(440);
   auto* rightLayout = new QVBoxLayout(right);
   rightLayout->setContentsMargins(6, 6, 6, 6);
   rightLayout->setSpacing(8);
@@ -377,17 +407,25 @@ void MainWindow::rebuildUi() {
   rightLayout->addStretch(1);
 
   mainSplit->addWidget(right);
-  mainSplit->setStretchFactor(0, 4);
-  mainSplit->setStretchFactor(1, 1);
-  setCentralWidget(mainSplit);
+  // Image/profile column takes all extra width; control column stays near preferred size.
+  mainSplit->setStretchFactor(0, 1);
+  mainSplit->setStretchFactor(1, 0);
+  mainSplit->setSizes({1000, 320});
+  centralLayout->addWidget(mainSplit, /*stretch=*/1);
+  setCentralWidget(centralHost);
 
   metricsPanel_ = new MetricsPanel;
+  metricsPanel_->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Expanding);
+  metricsPanel_->setMinimumWidth(240);
   metricsDock_ = new QDockWidget(QStringLiteral("测量指标"), this);
   metricsDock_->setObjectName(QStringLiteral("MetricsDock"));
   metricsDock_->setWidget(metricsPanel_);
+  metricsDock_->setAllowedAreas(Qt::LeftDockWidgetArea | Qt::RightDockWidgetArea);
   metricsDock_->setFeatures(QDockWidget::DockWidgetMovable | QDockWidget::DockWidgetFloatable |
                             QDockWidget::DockWidgetClosable);
+  metricsDock_->setMinimumWidth(260);
   addDockWidget(Qt::RightDockWidgetArea, metricsDock_);
+  resizeDocks({metricsDock_}, {300}, Qt::Horizontal);
   viewMenu->addAction(metricsDock_->toggleViewAction());
 
   statusLabel_ = new QLabel(QStringLiteral("就绪"));
@@ -1212,6 +1250,13 @@ void MainWindow::loadSettings() {
   rebuildRecentMenu();
   restoreGeometry(s.value(QStringLiteral("geometry")).toByteArray());
   restoreState(s.value(QStringLiteral("windowState")).toByteArray());
+  // Clamp a corrupted/legacy dock width so maximize never leaves an empty gutter.
+  if (metricsDock_ && !metricsDock_->isFloating() && metricsDock_->isVisible()) {
+    const int w = metricsDock_->width();
+    if (w < 200 || w > 640) {
+      resizeDocks({metricsDock_}, {300}, Qt::Horizontal);
+    }
+  }
 }
 
 }  // namespace beam::ui
