@@ -1,0 +1,33 @@
+name: CI
+
+on:
+  push:
+    branches: [main, cursor/**]
+  pull_request:
+    branches: [main]
+
+jobs:
+  build-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y qt6-base-dev cmake ninja-build g++
+
+      - name: Configure
+        run: cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
+
+      - name: Build
+        run: cmake --build build
+
+      - name: Test
+        run: ctest --test-dir build --output-on-failure
+
+      - name: Libraries-only build smoke
+        run: |
+          cmake -S . -B build-libs -G Ninja -DCMAKE_BUILD_TYPE=Release -DBEAM_BUILD_APP=OFF
+          cmake --build build-libs
+          ctest --test-dir build-libs --output-on-failure
