@@ -1,6 +1,8 @@
 add_library(beam_io
   src/CsvImporter.cpp
   src/ResultExporter.cpp
+  src/ImageImporter.cpp
+  src/ImageExporter.cpp
 )
 
 add_library(beam::io ALIAS beam_io)

@@ -1,36 +1,50 @@
 #include "MainWindow.hpp"
 
 #include "M2ScanDialog.hpp"
+#include "MetricsPanel.hpp"
 #include "ProfilePlot.hpp"
 
 #include "beam/io/CsvImporter.hpp"
+#include "beam/io/ImageExporter.hpp"
+#include "beam/io/ImageImporter.hpp"
 #include "beam/io/ResultExporter.hpp"
 
+#include <QApplication>
 #include <QCheckBox>
 #include <QComboBox>
+#include <QDockWidget>
 #include <QDoubleSpinBox>
+#include <QDragEnterEvent>
+#include <QDropEvent>
 #include <QFileDialog>
-#include <QFont>
+#include <QFileInfo>
 #include <QFormLayout>
 #include <QGroupBox>
 #include <QHBoxLayout>
+#include <QKeySequence>
 #include <QLabel>
+#include <QMenu>
+#include <QMenuBar>
 #include <QMessageBox>
+#include <QMimeData>
 #include <QPushButton>
 #include <QScrollArea>
 #include <QSettings>
 #include <QSignalBlocker>
+#include <QSlider>
 #include <QSplitter>
 #include <QStatusBar>
-#include <QTextEdit>
 #include <QTimer>
 #include <QToolBar>
+#include <QUrl>
 #include <QVBoxLayout>
 #include <QWidget>
 
 #include <algorithm>
-
 #include <cmath>
+#include <cstdint>
+#include <cstdio>
+#include <optional>
 
 namespace beam::ui {
 namespace {
@@ -39,15 +53,77 @@ QString fmt(double v, int digits = 4) {
   return QString::number(v, 'g', digits);
 }
 
+bool isImageExt(const QString& ext) {
+  const QString e = ext.toLower();
+  return e == QLatin1String("png") || e == QLatin1String("bmp") ||
+         e == QLatin1String("jpg") || e == QLatin1String("jpeg") ||
+         e == QLatin1String("tif") || e == QLatin1String("tiff");
+}
+
+beam::core::BeamFrame qImageToFrame(const QImage& src, double px, double py) {
+  QImage img = src;
+  if (img.format() != QImage::Format_Grayscale8 &&
+      img.format() != QImage::Format_Grayscale16 &&
+      img.format() != QImage::Format_RGB32 &&
+      img.format() != QImage::Format_ARGB32 &&
+      img.format() != QImage::Format_RGB888) {
+    img = img.convertToFormat(QImage::Format_RGB32);
+  }
+
+  beam::io::ImageImportOptions opt;
+  opt.pixelSizeX_um = px;
+  opt.pixelSizeY_um = py;
+
+  if (img.format() == QImage::Format_Grayscale16) {
+    std::vector<std::uint16_t> buf(static_cast<std::size_t>(img.width() * img.height()));
+    for (int y = 0; y < img.height(); ++y) {
+      const auto* line = reinterpret_cast<const std::uint16_t*>(img.constScanLine(y));
+      std::copy(line, line + img.width(),
+                buf.begin() + static_cast<std::size_t>(y * img.width()));
+    }
+    return beam::io::frameFromGray16(static_cast<std::size_t>(img.width()),
+                                     static_cast<std::size_t>(img.height()), buf.data(),
+                                     opt)
+        .frame;
+  }
+
+  if (img.format() == QImage::Format_Grayscale8) {
+    std::vector<std::uint8_t> buf(static_cast<std::size_t>(img.width() * img.height()));
+    for (int y = 0; y < img.height(); ++y) {
+      const auto* line = img.constScanLine(y);
+      std::copy(line, line + img.width(),
+                buf.begin() + static_cast<std::size_t>(y * img.width()));
+    }
+    return beam::io::frameFromGray8(static_cast<std::size_t>(img.width()),
+                                    static_cast<std::size_t>(img.height()), buf.data(),
+                                    opt)
+        .frame;
+  }
+
+  img = img.convertToFormat(QImage::Format_RGB888);
+  std::vector<std::uint8_t> rgb(static_cast<std::size_t>(img.width() * img.height() * 3));
+  for (int y = 0; y < img.height(); ++y) {
+    const auto* line = img.constScanLine(y);
+    std::copy(line, line + img.width() * 3,
+              rgb.begin() + static_cast<std::size_t>(y * img.width() * 3));
+  }
+  return beam::io::frameFromRgb24(static_cast<std::size_t>(img.width()),
+                                  static_cast<std::size_t>(img.height()), rgb.data(),
+                                  opt)
+      .frame;
+}
+
 }  // namespace
 
 MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
-  setWindowTitle(QStringLiteral("Beam Analyzer — Phase 3"));
-  resize(1320, 860);
+  setWindowTitle(QStringLiteral("Beam Analyzer"));
+  resize(1400, 900);
+  setAcceptDrops(true);
   beam::camera::registerAllBuiltInBackends();
   rebuildUi();
   refreshCameraList();
   loadSettings();
+  setTheme(theme_);
 }
 
 MainWindow::~MainWindow() {
@@ -56,44 +132,62 @@ MainWindow::~MainWindow() {
 }
 
 void MainWindow::rebuildUi() {
-  auto* tool = addToolBar(QStringLiteral("主工具栏"));
-  tool->setMovable(false);
-
-  auto* openAct = tool->addAction(QStringLiteral("打开 CSV…"));
-  connect(openAct, &QAction::triggered, this, &MainWindow::openCsv);
-
-  auto* simAct = tool->addAction(QStringLiteral("模拟帧"));
-  connect(simAct, &QAction::triggered, this, &MainWindow::loadSimulatedFrame);
-
-  tool->addSeparator();
-  exportJsonAction_ = tool->addAction(QStringLiteral("导出 JSON…"));
+  auto* fileMenu = menuBar()->addMenu(QStringLiteral("文件(&F)"));
+  auto* openAct = fileMenu->addAction(QStringLiteral("打开…"));
+  openAct->setShortcut(QKeySequence::Open);
+  connect(openAct, &QAction::triggered, this, &MainWindow::openFile);
+  fileMenu->addAction(QStringLiteral("打开 CSV…"), this, &MainWindow::openCsv);
+  fileMenu->addAction(QStringLiteral("打开图像…"), this, &MainWindow::openImage);
+  recentMenu_ = fileMenu->addMenu(QStringLiteral("最近打开"));
+  rebuildRecentMenu();
+  fileMenu->addSeparator();
+  exportJsonAction_ = fileMenu->addAction(QStringLiteral("导出指标 JSON…"));
   connect(exportJsonAction_, &QAction::triggered, this, &MainWindow::exportJson);
-  exportCsvAction_ = tool->addAction(QStringLiteral("导出 CSV…"));
+  exportCsvAction_ = fileMenu->addAction(QStringLiteral("导出指标 CSV…"));
   connect(exportCsvAction_, &QAction::triggered, this, &MainWindow::exportCsv);
-  auto* exportPowerAct = tool->addAction(QStringLiteral("导出功率…"));
-  connect(exportPowerAct, &QAction::triggered, this, &MainWindow::exportPower);
+  exportImageAction_ = fileMenu->addAction(QStringLiteral("导出标注图像…"));
+  connect(exportImageAction_, &QAction::triggered, this, &MainWindow::exportAnnotatedImage);
   exportJsonAction_->setEnabled(false);
   exportCsvAction_->setEnabled(false);
+  exportImageAction_->setEnabled(false);
+  fileMenu->addSeparator();
+  auto* quitAct = fileMenu->addAction(QStringLiteral("退出"));
+  quitAct->setShortcut(QKeySequence::Quit);
+  connect(quitAct, &QAction::triggered, this, &QWidget::close);
 
+  auto* viewMenu = menuBar()->addMenu(QStringLiteral("视图(&V)"));
+  themeAction_ = viewMenu->addAction(QStringLiteral("切换浅色/深色主题"));
+  connect(themeAction_, &QAction::triggered, this, &MainWindow::toggleTheme);
+
+  auto* tool = addToolBar(QStringLiteral("主工具栏"));
+  tool->setMovable(false);
+  tool->setToolButtonStyle(Qt::ToolButtonTextOnly);
+  tool->setIconSize({16, 16});
+
+  tool->addAction(QStringLiteral("打开"), this, &MainWindow::openFile);
+  tool->addAction(QStringLiteral("模拟帧"), this, &MainWindow::loadSimulatedFrame);
+  tool->addSeparator();
+  tool->addAction(exportJsonAction_);
+  tool->addAction(exportCsvAction_);
+  tool->addAction(exportImageAction_);
+  tool->addAction(QStringLiteral("导出功率…"), this, &MainWindow::exportPower);
   tool->addSeparator();
   roiModeAction_ = tool->addAction(QStringLiteral("框选 ROI"));
   roiModeAction_->setCheckable(true);
   connect(roiModeAction_, &QAction::toggled, this, &MainWindow::onRoiModeToggled);
-  auto* clearRoiAct = tool->addAction(QStringLiteral("清除 ROI"));
-  connect(clearRoiAct, &QAction::triggered, this, &MainWindow::onClearRoi);
-
+  tool->addAction(QStringLiteral("清除 ROI"), this, &MainWindow::onClearRoi);
   tool->addSeparator();
-  auto* m2Act = tool->addAction(QStringLiteral("M² 扫描…"));
-  connect(m2Act, &QAction::triggered, this, &MainWindow::openM2Scan);
-
+  tool->addAction(QStringLiteral("M² 扫描…"), this, &MainWindow::openM2Scan);
   tool->addSeparator();
-  tool->addWidget(new QLabel(QStringLiteral("  色图: ")));
+  tool->addWidget(new QLabel(QStringLiteral(" 色图 ")));
   colorMapBox_ = new QComboBox;
   colorMapBox_->addItem(QStringLiteral("假彩色"), static_cast<int>(ColorMap::FalseColor));
   colorMapBox_->addItem(QStringLiteral("灰度"), static_cast<int>(ColorMap::Grayscale));
-  connect(colorMapBox_, QOverload<int>::of(&QComboBox::currentIndexChanged),
-          this, &MainWindow::onColorMapChanged);
+  connect(colorMapBox_, QOverload<int>::of(&QComboBox::currentIndexChanged), this,
+          &MainWindow::onColorMapChanged);
   tool->addWidget(colorMapBox_);
+  tool->addSeparator();
+  tool->addAction(themeAction_);
 
   auto* mainSplit = new QSplitter(Qt::Horizontal);
 
@@ -101,11 +195,26 @@ void MainWindow::rebuildUi() {
   imageView_ = new ImageView;
   connect(imageView_, &ImageView::roiChanged, this, &MainWindow::onRoiChanged);
   connect(imageView_, &ImageView::crosshairChanged, this, &MainWindow::onCrosshairChanged);
+  imageView_->clearFrame();
 
   auto* scroll = new QScrollArea;
   scroll->setWidgetResizable(true);
   scroll->setWidget(imageView_);
   leftSplit->addWidget(scroll);
+
+  auto* scrubRow = new QWidget;
+  auto* scrubLayout = new QHBoxLayout(scrubRow);
+  scrubLayout->setContentsMargins(6, 2, 6, 2);
+  scrubLayout->addWidget(new QLabel(QStringLiteral("帧历史")));
+  frameScrubber_ = new QSlider(Qt::Horizontal);
+  frameScrubber_->setEnabled(false);
+  frameScrubber_->setMinimum(0);
+  frameScrubber_->setMaximum(0);
+  connect(frameScrubber_, &QSlider::valueChanged, this, &MainWindow::onFrameScrub);
+  scrubLayout->addWidget(frameScrubber_, 1);
+  frameScrubLabel_ = new QLabel(QStringLiteral("0 / 0"));
+  scrubLayout->addWidget(frameScrubLabel_);
+  leftSplit->addWidget(scrubRow);
 
   auto* profiles = new QWidget;
   auto* profilesLayout = new QHBoxLayout(profiles);
@@ -115,15 +224,19 @@ void MainWindow::rebuildUi() {
   profilesLayout->addWidget(hProfilePlot_);
   profilesLayout->addWidget(vProfilePlot_);
   leftSplit->addWidget(profiles);
-  leftSplit->setStretchFactor(0, 3);
-  leftSplit->setStretchFactor(1, 1);
+  leftSplit->setStretchFactor(0, 5);
+  leftSplit->setStretchFactor(1, 0);
+  leftSplit->setStretchFactor(2, 1);
   mainSplit->addWidget(leftSplit);
 
   auto* right = new QWidget;
   auto* rightLayout = new QVBoxLayout(right);
+  rightLayout->setContentsMargins(6, 6, 6, 6);
+  rightLayout->setSpacing(8);
 
   auto* camBox = new QGroupBox(QStringLiteral("相机采集"));
   auto* camForm = new QFormLayout(camBox);
+  camForm->setSpacing(6);
 
   cameraSourceBox_ = new QComboBox;
   camForm->addRow(QStringLiteral("源"), cameraSourceBox_);
@@ -149,8 +262,8 @@ void MainWindow::rebuildUi() {
   camExposureSpin_->setDecimals(1);
   camExposureSpin_->setValue(1000.0);
   camExposureSpin_->setSuffix(QStringLiteral(" µs"));
-  connect(camExposureSpin_, QOverload<double>::of(&QDoubleSpinBox::valueChanged),
-          this, &MainWindow::onCameraControlsChanged);
+  connect(camExposureSpin_, QOverload<double>::of(&QDoubleSpinBox::valueChanged), this,
+          &MainWindow::onCameraControlsChanged);
   camForm->addRow(QStringLiteral("曝光"), camExposureSpin_);
 
   camGainSpin_ = new QDoubleSpinBox;
@@ -158,8 +271,8 @@ void MainWindow::rebuildUi() {
   camGainSpin_->setDecimals(2);
   camGainSpin_->setValue(0.0);
   camGainSpin_->setSuffix(QStringLiteral(" dB"));
-  connect(camGainSpin_, QOverload<double>::of(&QDoubleSpinBox::valueChanged),
-          this, &MainWindow::onCameraControlsChanged);
+  connect(camGainSpin_, QOverload<double>::of(&QDoubleSpinBox::valueChanged), this,
+          &MainWindow::onCameraControlsChanged);
   camForm->addRow(QStringLiteral("增益"), camGainSpin_);
 
   camFpsSpin_ = new QDoubleSpinBox;
@@ -167,8 +280,8 @@ void MainWindow::rebuildUi() {
   camFpsSpin_->setDecimals(1);
   camFpsSpin_->setValue(15.0);
   camFpsSpin_->setSuffix(QStringLiteral(" fps"));
-  connect(camFpsSpin_, QOverload<double>::of(&QDoubleSpinBox::valueChanged),
-          this, &MainWindow::onCameraControlsChanged);
+  connect(camFpsSpin_, QOverload<double>::of(&QDoubleSpinBox::valueChanged), this,
+          &MainWindow::onCameraControlsChanged);
   camForm->addRow(QStringLiteral("目标帧率"), camFpsSpin_);
 
   triggerModeBox_ = new QComboBox;
@@ -178,14 +291,13 @@ void MainWindow::rebuildUi() {
                            static_cast<int>(beam::camera::TriggerMode::Software));
   triggerModeBox_->addItem(QStringLiteral("硬触发 (Hardware)"),
                            static_cast<int>(beam::camera::TriggerMode::Hardware));
-  connect(triggerModeBox_, QOverload<int>::of(&QComboBox::currentIndexChanged),
-          this, &MainWindow::onCameraControlsChanged);
+  connect(triggerModeBox_, QOverload<int>::of(&QComboBox::currentIndexChanged), this,
+          &MainWindow::onCameraControlsChanged);
   camForm->addRow(QStringLiteral("触发"), triggerModeBox_);
 
   softwareTriggerBtn_ = new QPushButton(QStringLiteral("软触发一次"));
   connect(softwareTriggerBtn_, &QPushButton::clicked, this, &MainWindow::onSoftwareTrigger);
   camForm->addRow(softwareTriggerBtn_);
-
   rightLayout->addWidget(camBox);
 
   liveTimer_ = new QTimer(this);
@@ -193,6 +305,7 @@ void MainWindow::rebuildUi() {
 
   auto* toolsBox = new QGroupBox(QStringLiteral("分析工具"));
   auto* toolsForm = new QFormLayout(toolsBox);
+  toolsForm->setSpacing(6);
 
   useRoiCheck_ = new QCheckBox(QStringLiteral("启用 ROI"));
   connect(useRoiCheck_, &QCheckBox::toggled, this, [this](bool) { onRecompute(); });
@@ -200,21 +313,22 @@ void MainWindow::rebuildUi() {
 
   backgroundBox_ = new QComboBox;
   backgroundBox_->addItem(QStringLiteral("无"), static_cast<int>(beam::core::BackgroundMode::None));
-  backgroundBox_->addItem(QStringLiteral("常数"), static_cast<int>(beam::core::BackgroundMode::Constant));
+  backgroundBox_->addItem(QStringLiteral("常数"),
+                          static_cast<int>(beam::core::BackgroundMode::Constant));
   backgroundBox_->addItem(QStringLiteral("边框均值"),
                           static_cast<int>(beam::core::BackgroundMode::BorderMean));
   backgroundBox_->addItem(QStringLiteral("背景 ROI 均值"),
                           static_cast<int>(beam::core::BackgroundMode::RoiMean));
-  connect(backgroundBox_, QOverload<int>::of(&QComboBox::currentIndexChanged),
-          this, &MainWindow::onBackgroundModeChanged);
+  connect(backgroundBox_, QOverload<int>::of(&QComboBox::currentIndexChanged), this,
+          &MainWindow::onBackgroundModeChanged);
   toolsForm->addRow(QStringLiteral("背景"), backgroundBox_);
 
   bgConstantSpin_ = new QDoubleSpinBox;
   bgConstantSpin_->setRange(-1e9, 1e9);
   bgConstantSpin_->setDecimals(4);
   bgConstantSpin_->setEnabled(false);
-  connect(bgConstantSpin_, QOverload<double>::of(&QDoubleSpinBox::valueChanged),
-          this, [this](double) { onRecompute(); });
+  connect(bgConstantSpin_, QOverload<double>::of(&QDoubleSpinBox::valueChanged), this,
+          [this](double) { onRecompute(); });
   toolsForm->addRow(QStringLiteral("常数背景"), bgConstantSpin_);
 
   countsToWattsSpin_ = new QDoubleSpinBox;
@@ -222,8 +336,8 @@ void MainWindow::rebuildUi() {
   countsToWattsSpin_->setDecimals(10);
   countsToWattsSpin_->setSingleStep(1e-6);
   countsToWattsSpin_->setSpecialValueText(QStringLiteral("未标定"));
-  connect(countsToWattsSpin_, QOverload<double>::of(&QDoubleSpinBox::valueChanged),
-          this, &MainWindow::onCalibrationChanged);
+  connect(countsToWattsSpin_, QOverload<double>::of(&QDoubleSpinBox::valueChanged), this,
+          &MainWindow::onCalibrationChanged);
   toolsForm->addRow(QStringLiteral("counts→W"), countsToWattsSpin_);
 
   exposureSpin_ = new QDoubleSpinBox;
@@ -231,8 +345,8 @@ void MainWindow::rebuildUi() {
   exposureSpin_->setDecimals(6);
   exposureSpin_->setValue(1.0);
   exposureSpin_->setSuffix(QStringLiteral(" s"));
-  connect(exposureSpin_, QOverload<double>::of(&QDoubleSpinBox::valueChanged),
-          this, &MainWindow::onCalibrationChanged);
+  connect(exposureSpin_, QOverload<double>::of(&QDoubleSpinBox::valueChanged), this,
+          &MainWindow::onCalibrationChanged);
   toolsForm->addRow(QStringLiteral("分析曝光"), exposureSpin_);
 
   wavelengthSpin_ = new QDoubleSpinBox;
@@ -240,8 +354,8 @@ void MainWindow::rebuildUi() {
   wavelengthSpin_->setDecimals(3);
   wavelengthSpin_->setValue(1064.0);
   wavelengthSpin_->setSuffix(QStringLiteral(" nm"));
-  connect(wavelengthSpin_, QOverload<double>::of(&QDoubleSpinBox::valueChanged),
-          this, &MainWindow::onCalibrationChanged);
+  connect(wavelengthSpin_, QOverload<double>::of(&QDoubleSpinBox::valueChanged), this,
+          &MainWindow::onCalibrationChanged);
   toolsForm->addRow(QStringLiteral("波长"), wavelengthSpin_);
 
   auto* exportProfRow = new QHBoxLayout;
@@ -252,33 +366,191 @@ void MainWindow::rebuildUi() {
   exportProfRow->addWidget(exportH);
   exportProfRow->addWidget(exportV);
   toolsForm->addRow(exportProfRow);
-
   rightLayout->addWidget(toolsBox);
 
-  rightLayout->addWidget(new QLabel(QStringLiteral("ISO 11146 / 功率指标")));
-  metricsView_ = new QTextEdit;
-  metricsView_->setReadOnly(true);
-  metricsView_->setFont(QFont(QStringLiteral("Consolas"), 10));
-  metricsView_->setPlainText(QStringLiteral("尚无数据。连接模拟相机或打开 CSV。"));
-  rightLayout->addWidget(metricsView_, 1);
-
   auto* hint = new QLabel(
-      QStringLiteral("Phase 3：相机插件层（GenTL/UVC 桩 + Simulated 实时）。\n"
-                     "未做真实硬件联调；专有 SDK 见 README 插件说明。\n"
-                     "可选源 → 连接 → 实时预览；软触发模式下点「软触发一次」。"));
+      QStringLiteral("提示：拖放 PNG/BMP/TIFF/JPEG/CSV 到窗口即可打开。"
+                     "实时预览时指标会动态刷新；暂停后可用帧历史滑条回看。"));
   hint->setWordWrap(true);
-  hint->setStyleSheet(QStringLiteral("color: #666;"));
+  hint->setStyleSheet(QStringLiteral("color: #8892a4; font-size: 11px;"));
   rightLayout->addWidget(hint);
+  rightLayout->addStretch(1);
 
   mainSplit->addWidget(right);
-  mainSplit->setStretchFactor(0, 3);
+  mainSplit->setStretchFactor(0, 4);
   mainSplit->setStretchFactor(1, 1);
   setCentralWidget(mainSplit);
 
+  metricsPanel_ = new MetricsPanel;
+  metricsDock_ = new QDockWidget(QStringLiteral("测量指标"), this);
+  metricsDock_->setObjectName(QStringLiteral("MetricsDock"));
+  metricsDock_->setWidget(metricsPanel_);
+  metricsDock_->setFeatures(QDockWidget::DockWidgetMovable | QDockWidget::DockWidgetFloatable |
+                            QDockWidget::DockWidgetClosable);
+  addDockWidget(Qt::RightDockWidgetArea, metricsDock_);
+  viewMenu->addAction(metricsDock_->toggleViewAction());
+
   statusLabel_ = new QLabel(QStringLiteral("就绪"));
-  statusBar()->addWidget(statusLabel_, 1);
+  statusMetricsBrief_ = new QLabel(QStringLiteral("—"));
+  statusBar()->addWidget(statusLabel_, 2);
+  statusBar()->addPermanentWidget(statusMetricsBrief_, 1);
 
   setCameraUiConnected(false);
+}
+
+void MainWindow::rebuildRecentMenu() {
+  if (!recentMenu_) {
+    return;
+  }
+  recentMenu_->clear();
+  if (recentFiles_.isEmpty()) {
+    auto* empty = recentMenu_->addAction(QStringLiteral("（无）"));
+    empty->setEnabled(false);
+  } else {
+    for (const QString& path : recentFiles_) {
+      auto* act = recentMenu_->addAction(path);
+      act->setData(path);
+      connect(act, &QAction::triggered, this, &MainWindow::openRecentFile);
+    }
+  }
+  recentMenu_->addSeparator();
+  recentMenu_->addAction(QStringLiteral("清除列表"), this, &MainWindow::clearRecentFiles);
+}
+
+void MainWindow::addRecentFile(const QString& path) {
+  if (path.isEmpty() || path.startsWith(QLatin1Char('<'))) {
+    return;
+  }
+  recentFiles_.removeAll(path);
+  recentFiles_.prepend(path);
+  while (recentFiles_.size() > 12) {
+    recentFiles_.removeLast();
+  }
+  rebuildRecentMenu();
+}
+
+void MainWindow::openRecentFile() {
+  auto* act = qobject_cast<QAction*>(sender());
+  if (!act) {
+    return;
+  }
+  loadPath(act->data().toString());
+}
+
+void MainWindow::clearRecentFiles() {
+  recentFiles_.clear();
+  rebuildRecentMenu();
+}
+
+void MainWindow::dragEnterEvent(QDragEnterEvent* event) {
+  if (event->mimeData()->hasUrls()) {
+    event->acceptProposedAction();
+  }
+}
+
+void MainWindow::dropEvent(QDropEvent* event) {
+  const auto urls = event->mimeData()->urls();
+  if (urls.isEmpty()) {
+    return;
+  }
+  loadPath(urls.front().toLocalFile());
+}
+
+bool MainWindow::loadPath(const QString& path) {
+  if (path.isEmpty()) {
+    return false;
+  }
+  const QFileInfo fi(path);
+  const QString ext = fi.suffix().toLower();
+  if (ext == QLatin1String("csv")) {
+    return loadCsvPath(path);
+  }
+  if (isImageExt(ext)) {
+    return loadImagePath(path);
+  }
+  QMessageBox::information(this, QStringLiteral("打开"),
+                           QStringLiteral("不支持的文件类型：%1").arg(ext));
+  return false;
+}
+
+void MainWindow::openFile() {
+  const QString path = QFileDialog::getOpenFileName(
+      this, QStringLiteral("打开帧数据"), QString(),
+      QStringLiteral(
+          "支持的文件 (*.csv *.png *.bmp *.jpg *.jpeg *.tif *.tiff);;"
+          "CSV (*.csv);;Images (*.png *.bmp *.jpg *.jpeg *.tif *.tiff);;All (*)"));
+  if (!path.isEmpty()) {
+    loadPath(path);
+  }
+}
+
+void MainWindow::openCsv() {
+  const QString path = QFileDialog::getOpenFileName(
+      this, QStringLiteral("打开光束帧 CSV"), QString(),
+      QStringLiteral("CSV (*.csv);;All files (*)"));
+  if (!path.isEmpty()) {
+    loadCsvPath(path);
+  }
+}
+
+void MainWindow::openImage() {
+  const QString path = QFileDialog::getOpenFileName(
+      this, QStringLiteral("打开图像"), QString(),
+      QStringLiteral("Images (*.png *.bmp *.jpg *.jpeg *.tif *.tiff);;All (*)"));
+  if (!path.isEmpty()) {
+    loadImagePath(path);
+  }
+}
+
+bool MainWindow::loadCsvPath(const QString& path) {
+  beam::io::CsvImportOptions opt;
+  opt.pixelSizeX_um = 5.0;
+  opt.pixelSizeY_um = 5.0;
+  const auto result = beam::io::loadFrameCsv(path.toStdString(), opt);
+  if (!result.ok) {
+    QMessageBox::warning(this, QStringLiteral("导入失败"),
+                         QString::fromStdString(result.message));
+    return false;
+  }
+  applyFrame(result.frame, path);
+  addRecentFile(path);
+  return true;
+}
+
+bool MainWindow::loadImagePath(const QString& path) {
+  const QFileInfo fi(path);
+  const QString ext = fi.suffix().toLower();
+
+  // Prefer portable BMP path for parity with library tests; else Qt codecs.
+  if (ext == QLatin1String("bmp")) {
+    beam::io::ImageImportOptions opt;
+    opt.pixelSizeX_um = 5.0;
+    opt.pixelSizeY_um = 5.0;
+    const auto result = beam::io::loadFrameBmp(path.toStdString(), opt);
+    if (result.ok) {
+      applyFrame(result.frame, path);
+      addRecentFile(path);
+      return true;
+    }
+  }
+
+  QImage img(path);
+  if (img.isNull()) {
+    QMessageBox::warning(
+        this, QStringLiteral("导入失败"),
+        QStringLiteral("无法解码图像（TIFF 可能需要 Qt imageformats 插件）：\n%1")
+            .arg(path));
+    return false;
+  }
+  auto frame = qImageToFrame(img, 5.0, 5.0);
+  if (frame.empty()) {
+    QMessageBox::warning(this, QStringLiteral("导入失败"),
+                         QStringLiteral("图像转换失败。"));
+    return false;
+  }
+  applyFrame(std::move(frame), path);
+  addRecentFile(path);
+  return true;
 }
 
 beam::camera::CameraControls MainWindow::readCameraControls() const {
@@ -286,8 +558,7 @@ beam::camera::CameraControls MainWindow::readCameraControls() const {
   c.exposure_us = camExposureSpin_->value();
   c.gain_db = camGainSpin_->value();
   c.targetFps = camFpsSpin_->value();
-  c.trigger = static_cast<beam::camera::TriggerMode>(
-      triggerModeBox_->currentData().toInt());
+  c.trigger = static_cast<beam::camera::TriggerMode>(triggerModeBox_->currentData().toInt());
   return c;
 }
 
@@ -378,6 +649,7 @@ void MainWindow::onCameraDisconnect() {
   if (liveTimer_) {
     liveTimer_->stop();
   }
+  liveActive_ = false;
   if (livePreviewCheck_) {
     const QSignalBlocker b(livePreviewCheck_);
     livePreviewCheck_->setChecked(false);
@@ -388,6 +660,9 @@ void MainWindow::onCameraDisconnect() {
     activeCamera_.reset();
   }
   setCameraUiConnected(false);
+  if (metricsPanel_) {
+    metricsPanel_->setLive(false);
+  }
   statusLabel_->setText(QStringLiteral("相机已断开"));
 }
 
@@ -406,11 +681,16 @@ void MainWindow::onLivePreviewToggled(bool on) {
     const int intervalMs =
         static_cast<int>(std::max(10.0, 1000.0 / std::max(1.0, camFpsSpin_->value())));
     liveTimer_->start(intervalMs);
+    liveActive_ = true;
     statusLabel_->setText(QStringLiteral("实时预览中…"));
   } else {
     liveTimer_->stop();
     activeCamera_->stopAcquisition();
-    statusLabel_->setText(QStringLiteral("实时预览已停止"));
+    liveActive_ = false;
+    if (metricsPanel_) {
+      metricsPanel_->setLive(false);
+    }
+    statusLabel_->setText(QStringLiteral("实时预览已停止 — 可用帧历史回看"));
   }
 }
 
@@ -441,16 +721,15 @@ void MainWindow::onSoftwareTrigger() {
     }
   }
   if (!activeCamera_->softwareTrigger()) {
-    // FreeRun: just grab once below
+    // FreeRun: grab once below
   }
   const auto cap = activeCamera_->grab();
   if (!cap.ok) {
     statusLabel_->setText(QString::fromStdString(cap.message));
     return;
   }
-  applyFrame(cap.frame,
-             QStringLiteral("<camera:%1>")
-                 .arg(QString::fromStdString(activeCamera_->info().id)));
+  applyFrame(cap.frame, QStringLiteral("<camera:%1>")
+                            .arg(QString::fromStdString(activeCamera_->info().id)));
 }
 
 void MainWindow::onLiveTick() {
@@ -461,16 +740,30 @@ void MainWindow::onLiveTick() {
       triggerModeBox_->currentData().toInt());
   if (mode == beam::camera::TriggerMode::Software ||
       mode == beam::camera::TriggerMode::Hardware) {
-    // Wait for explicit trigger / external line — do not block UI on timeout.
     return;
   }
   const auto cap = activeCamera_->grab();
   if (!cap.ok) {
     return;
   }
-  applyFrame(cap.frame,
-             QStringLiteral("<live:%1>")
-                 .arg(QString::fromStdString(activeCamera_->info().id)));
+  applyFrame(cap.frame, QStringLiteral("<live:%1>")
+                            .arg(QString::fromStdString(activeCamera_->info().id)));
+}
+
+void MainWindow::onFrameScrub(int index) {
+  if (scrubbing_ || frameHistory_.empty()) {
+    return;
+  }
+  if (index < 0 || index >= static_cast<int>(frameHistory_.size())) {
+    return;
+  }
+  scrubbing_ = true;
+  applyFrame(frameHistory_[static_cast<std::size_t>(index)],
+             frameHistoryLabels_[static_cast<std::size_t>(index)],
+             /*pushHistory=*/false);
+  scrubbing_ = false;
+  frameScrubLabel_->setText(
+      QStringLiteral("%1 / %2").arg(index + 1).arg(frameHistory_.size()));
 }
 
 beam::core::AnalysisPrep MainWindow::currentPrep() const {
@@ -479,16 +772,12 @@ beam::core::AnalysisPrep MainWindow::currentPrep() const {
   if (roi_) {
     prep.roi = *roi_;
   }
-  prep.background.mode = static_cast<beam::core::BackgroundMode>(
-      backgroundBox_->currentData().toInt());
+  prep.background.mode =
+      static_cast<beam::core::BackgroundMode>(backgroundBox_->currentData().toInt());
   prep.background.constantValue = bgConstantSpin_->value();
   prep.background.clipNegative = true;
   if (prep.background.mode == beam::core::BackgroundMode::RoiMean) {
-    if (roi_ && !roi_->empty() && rawFrame_) {
-      prep.background.backgroundRoi = {
-          0, 0, std::min(1, static_cast<int>(rawFrame_->width) - 1),
-          static_cast<int>(rawFrame_->height) - 1};
-    } else if (rawFrame_) {
+    if (rawFrame_) {
       prep.background.backgroundRoi = {
           0, 0, std::min(1, static_cast<int>(rawFrame_->width) - 1),
           static_cast<int>(rawFrame_->height) - 1};
@@ -503,26 +792,6 @@ beam::core::PowerCalibration MainWindow::currentCalibration() const {
   cal.exposure_s = exposureSpin_->value();
   cal.wavelength_nm = wavelengthSpin_->value();
   return cal;
-}
-
-void MainWindow::openCsv() {
-  const QString path = QFileDialog::getOpenFileName(
-      this, QStringLiteral("打开光束帧 CSV"), QString(),
-      QStringLiteral("CSV (*.csv);;All files (*)"));
-  if (path.isEmpty()) {
-    return;
-  }
-
-  beam::io::CsvImportOptions opt;
-  opt.pixelSizeX_um = 5.0;
-  opt.pixelSizeY_um = 5.0;
-  const auto result = beam::io::loadFrameCsv(path.toStdString(), opt);
-  if (!result.ok) {
-    QMessageBox::warning(this, QStringLiteral("导入失败"),
-                         QString::fromStdString(result.message));
-    return;
-  }
-  applyFrame(result.frame, path);
 }
 
 void MainWindow::loadSimulatedFrame() {
@@ -542,7 +811,8 @@ void MainWindow::loadSimulatedFrame() {
   applyFrame(cap.frame, QStringLiteral("<simulated>"));
 }
 
-void MainWindow::applyFrame(beam::core::BeamFrame frame, const QString& sourceLabel) {
+void MainWindow::applyFrame(beam::core::BeamFrame frame, const QString& sourceLabel,
+                            bool pushHistory) {
   rawFrame_ = std::move(frame);
   sourcePath_ = sourceLabel;
   if (crossX_ < 0 || crossY_ < 0 ||
@@ -554,12 +824,29 @@ void MainWindow::applyFrame(beam::core::BeamFrame frame, const QString& sourceLa
   imageView_->setCrosshair(crossX_, crossY_);
   exportJsonAction_->setEnabled(true);
   exportCsvAction_->setEnabled(true);
+  exportImageAction_->setEnabled(true);
+
+  if (pushHistory && !scrubbing_) {
+    frameHistory_.push_back(*rawFrame_);
+    frameHistoryLabels_.push_back(sourceLabel);
+    while (static_cast<int>(frameHistory_.size()) > kMaxHistory) {
+      frameHistory_.pop_front();
+      frameHistoryLabels_.pop_front();
+    }
+    const QSignalBlocker b(frameScrubber_);
+    frameScrubber_->setEnabled(frameHistory_.size() > 1);
+    frameScrubber_->setMaximum(static_cast<int>(frameHistory_.size()) - 1);
+    frameScrubber_->setValue(frameScrubber_->maximum());
+    frameScrubLabel_->setText(QStringLiteral("%1 / %2")
+                                  .arg(frameHistory_.size())
+                                  .arg(frameHistory_.size()));
+  }
+
   refreshAnalysis();
-  statusLabel_->setText(
-      QStringLiteral("已加载 %1×%2 — %3")
-          .arg(rawFrame_->width)
-          .arg(rawFrame_->height)
-          .arg(sourceLabel));
+  statusLabel_->setText(QStringLiteral("已加载 %1×%2 — %3")
+                            .arg(rawFrame_->width)
+                            .arg(rawFrame_->height)
+                            .arg(sourceLabel));
 }
 
 void MainWindow::refreshAnalysis() {
@@ -572,6 +859,7 @@ void MainWindow::refreshAnalysis() {
   refreshImage();
   refreshProfiles();
   refreshMetricsPanel();
+  updateStatusBarDetails();
 }
 
 void MainWindow::refreshImage() {
@@ -581,9 +869,10 @@ void MainWindow::refreshImage() {
   double mn = 0;
   double mx = 0;
   const QImage displayBase = frameToImage(*rawFrame_, colorMap_, &mn, &mx);
-  const QImage displayScaled = displayBase.scaled(
-      std::max(displayBase.width(), 480), std::max(displayBase.height(), 360),
-      Qt::KeepAspectRatio, Qt::FastTransformation);
+  const QImage displayScaled =
+      displayBase.scaled(std::max(displayBase.width(), 480),
+                         std::max(displayBase.height(), 360), Qt::KeepAspectRatio,
+                         Qt::FastTransformation);
   imageView_->setDisplayImage(displayScaled, static_cast<int>(rawFrame_->width),
                               static_cast<int>(rawFrame_->height));
   if (roi_) {
@@ -620,63 +909,36 @@ void MainWindow::refreshProfiles() {
 }
 
 void MainWindow::refreshMetricsPanel() {
-  if (!metrics_ || !metrics_->valid) {
-    metricsView_->setPlainText(QStringLiteral("指标无效（空帧或零功率）。"));
+  if (!metricsPanel_) {
     return;
   }
-  const auto& m = *metrics_;
-  const double oriDeg = m.orientation_rad * 180.0 / 3.14159265358979323846;
-  QString text;
-  text += QStringLiteral("来源: %1\n\n").arg(sourcePath_);
-  text += QStringLiteral("— ISO 11146 —\n");
-  text += QStringLiteral("总功率 (a.u.): %1\n").arg(fmt(m.totalPower, 6));
-  text += QStringLiteral("质心 X (µm):   %1\n").arg(fmt(m.centroidX_um));
-  text += QStringLiteral("质心 Y (µm):   %1\n").arg(fmt(m.centroidY_um));
-  text += QStringLiteral("\n实验室坐标束宽 dσ=4σ\n");
-  text += QStringLiteral("  Dx (µm):     %1\n").arg(fmt(m.diameterX_um));
-  text += QStringLiteral("  Dy (µm):     %1\n").arg(fmt(m.diameterY_um));
-  text += QStringLiteral("\n主轴束宽\n");
-  text += QStringLiteral("  D_major:     %1\n").arg(fmt(m.diameterMajor_um));
-  text += QStringLiteral("  D_minor:     %1\n").arg(fmt(m.diameterMinor_um));
-  text += QStringLiteral("  方位角 (°):  %1\n").arg(fmt(oriDeg));
-  text += QStringLiteral("  椭圆度 ε:    %1\n").arg(fmt(m.ellipticity));
-
-  if (power_ && power_->valid) {
-    text += QStringLiteral("\n— 功率 / 能量 —\n");
-    text += QStringLiteral("Σ counts:     %1\n").arg(fmt(power_->sumCounts, 6));
-    text += QStringLiteral("峰值 counts:  %1\n").arg(fmt(power_->peakCounts, 6));
-    text += QStringLiteral("均值 counts:  %1\n").arg(fmt(power_->meanCounts, 6));
-    if (power_->calibrated) {
-      text += QStringLiteral("功率 (W):     %1\n").arg(fmt(power_->power_W, 6));
-      text += QStringLiteral("能量 (J):     %1\n").arg(fmt(power_->energy_J, 6));
-    } else {
-      text += QStringLiteral("功率:         未标定（设置 counts→W）\n");
-    }
+  metricsPanel_->setSource(sourcePath_);
+  metricsPanel_->setLive(liveActive_, liveActive_ ? camFpsSpin_->value() : 0.0);
+  if (!metrics_ || !metrics_->valid) {
+    metricsPanel_->clear();
+    metricsPanel_->setSource(sourcePath_);
+    return;
   }
-
-  if (activeCamera_) {
-    const auto c = activeCamera_->controls();
-    text += QStringLiteral("\n— 相机控件 —\n");
-    text += QStringLiteral("触发: %1\n").arg(QString::fromUtf8(beam::camera::toString(c.trigger)));
-    text += QStringLiteral("曝光: %1 µs\n").arg(fmt(c.exposure_us));
-    text += QStringLiteral("增益: %1 dB\n").arg(fmt(c.gain_db));
+  std::optional<beam::camera::CameraControls> camCopy;
+  if (activeCamera_ && activeCamera_->isOpen()) {
+    camCopy = activeCamera_->controls();
   }
+  metricsPanel_->updateMetrics(*metrics_, power_, rawFrame_ ? &(*rawFrame_) : nullptr, roi_,
+                               useRoiCheck_->isChecked(), crossX_, crossY_,
+                               camCopy ? &(*camCopy) : nullptr);
+}
 
-  if (roi_ && useRoiCheck_->isChecked()) {
-    text += QStringLiteral("\nROI: [%1,%2]–[%3,%4]\n")
-                .arg(roi_->x0)
-                .arg(roi_->y0)
-                .arg(roi_->x1)
-                .arg(roi_->y1);
+void MainWindow::updateStatusBarDetails() {
+  if (!metrics_ || !metrics_->valid) {
+    statusMetricsBrief_->setText(QStringLiteral("指标: —"));
+    return;
   }
-  if (crossX_ >= 0) {
-    text += QStringLiteral("剖面十字线: (%1, %2)\n").arg(crossX_).arg(crossY_);
-  }
-
-  text += QStringLiteral("\n像素尺寸: %1 × %2 µm")
-              .arg(fmt(rawFrame_->pixelSizeX_um))
-              .arg(fmt(rawFrame_->pixelSizeY_um));
-  metricsView_->setPlainText(text);
+  statusMetricsBrief_->setText(
+      QStringLiteral("Cx %1 µm | Cy %2 µm | Dx %3 µm | Dy %4 µm")
+          .arg(fmt(metrics_->centroidX_um, 4))
+          .arg(fmt(metrics_->centroidY_um, 4))
+          .arg(fmt(metrics_->diameterX_um, 4))
+          .arg(fmt(metrics_->diameterY_um, 4)));
 }
 
 bool MainWindow::ensureMetrics() const {
@@ -695,7 +957,7 @@ void MainWindow::exportJson() {
   }
   beam::io::ExportMeta meta;
   meta.sourcePath = sourcePath_.toStdString();
-  meta.note = "Beam Analyzer Phase 3";
+  meta.note = "Beam Analyzer";
   if (!beam::io::exportMetricsJson(path.toStdString(), *metrics_, meta)) {
     QMessageBox::warning(this, QStringLiteral("导出失败"), QStringLiteral("无法写入文件。"));
     return;
@@ -715,7 +977,7 @@ void MainWindow::exportCsv() {
   }
   beam::io::ExportMeta meta;
   meta.sourcePath = sourcePath_.toStdString();
-  meta.note = "Beam Analyzer Phase 3";
+  meta.note = "Beam Analyzer";
   if (!beam::io::exportMetricsCsv(path.toStdString(), *metrics_, meta)) {
     QMessageBox::warning(this, QStringLiteral("导出失败"), QStringLiteral("无法写入文件。"));
     return;
@@ -737,12 +999,65 @@ void MainWindow::exportPower() {
   }
   beam::io::ExportMeta meta;
   meta.sourcePath = sourcePath_.toStdString();
-  meta.note = "Beam Analyzer Phase 3 power";
+  meta.note = "Beam Analyzer power";
   if (!beam::io::exportPowerJson(path.toStdString(), *power_, currentCalibration(), meta)) {
     QMessageBox::warning(this, QStringLiteral("导出失败"), QStringLiteral("无法写入文件。"));
     return;
   }
   statusLabel_->setText(QStringLiteral("已导出功率: %1").arg(path));
+}
+
+void MainWindow::exportAnnotatedImage() {
+  if (!rawFrame_) {
+    return;
+  }
+  const QString path = QFileDialog::getSaveFileName(
+      this, QStringLiteral("导出标注图像"), QStringLiteral("beam_annotated.png"),
+      QStringLiteral("PNG (*.png);;BMP (*.bmp);;JPEG (*.jpg);;TIFF (*.tif)"));
+  if (path.isEmpty()) {
+    return;
+  }
+
+  beam::io::AnnotatedExportOptions opt;
+  opt.colorMap = (colorMap_ == ColorMap::Grayscale) ? beam::io::ExportColorMap::Grayscale
+                                                    : beam::io::ExportColorMap::FalseColor;
+  opt.crossX = crossX_;
+  opt.crossY = crossY_;
+  opt.hasRoi = roi_.has_value() && useRoiCheck_->isChecked();
+  if (opt.hasRoi) {
+    opt.roi = *roi_;
+  }
+  if (metrics_ && metrics_->valid) {
+    char buf[160];
+    std::snprintf(buf, sizeof(buf), "Cx:%.2f um Cy:%.2f um Dx:%.2f um Dy:%.2f um",
+                  metrics_->centroidX_um, metrics_->centroidY_um, metrics_->diameterX_um,
+                  metrics_->diameterY_um);
+    opt.overlayLines.emplace_back(buf);
+  }
+
+  const QFileInfo fi(path);
+  const QString ext = fi.suffix().toLower();
+  if (ext == QLatin1String("bmp")) {
+    if (!beam::io::exportAnnotatedBmp(path.toStdString(), *rawFrame_,
+                                      metrics_ ? &(*metrics_) : nullptr, opt)) {
+      QMessageBox::warning(this, QStringLiteral("导出失败"),
+                           QStringLiteral("无法写入 BMP。"));
+      return;
+    }
+  } else {
+    // Qt path for PNG/JPEG/TIFF with richer overlay text.
+    const auto rgb = beam::io::renderAnnotatedRgb(*rawFrame_, metrics_ ? &(*metrics_) : nullptr,
+                                                  opt);
+    QImage img(rgb.rgb.data(), static_cast<int>(rgb.width), static_cast<int>(rgb.height),
+               static_cast<int>(rgb.width * 3), QImage::Format_RGB888);
+    QImage copy = img.copy();  // detach from temporary buffer
+    if (!copy.save(path)) {
+      QMessageBox::warning(this, QStringLiteral("导出失败"),
+                           QStringLiteral("无法写入图像（检查扩展名/插件）。"));
+      return;
+    }
+  }
+  statusLabel_->setText(QStringLiteral("已导出标注图像: %1").arg(path));
 }
 
 void MainWindow::exportHProfile() {
@@ -788,7 +1103,7 @@ void MainWindow::onColorMapChanged(int index) {
 
 void MainWindow::onRoiModeToggled(bool on) {
   imageView_->setInteractionMode(on ? ImageView::InteractionMode::DrawRoi
-                                     : ImageView::InteractionMode::None);
+                                    : ImageView::InteractionMode::None);
   statusLabel_->setText(on ? QStringLiteral("拖拽框选 ROI…") : QStringLiteral("就绪"));
 }
 
@@ -819,8 +1134,8 @@ void MainWindow::onCrosshairChanged(int x, int y) {
 }
 
 void MainWindow::onBackgroundModeChanged(int) {
-  const auto mode = static_cast<beam::core::BackgroundMode>(
-      backgroundBox_->currentData().toInt());
+  const auto mode =
+      static_cast<beam::core::BackgroundMode>(backgroundBox_->currentData().toInt());
   bgConstantSpin_->setEnabled(mode == beam::core::BackgroundMode::Constant);
   onRecompute();
 }
@@ -831,6 +1146,7 @@ void MainWindow::onCalibrationChanged() {
   }
   power_ = beam::core::computePowerMetrics(*analysisFrame_, currentCalibration());
   refreshMetricsPanel();
+  updateStatusBarDetails();
 }
 
 void MainWindow::onRecompute() {
@@ -846,6 +1162,15 @@ void MainWindow::openM2Scan() {
   dlg.exec();
 }
 
+void MainWindow::toggleTheme() {
+  setTheme(theme_ == AppTheme::Dark ? AppTheme::Light : AppTheme::Dark);
+}
+
+void MainWindow::setTheme(AppTheme theme) {
+  theme_ = theme;
+  qApp->setStyleSheet(themeStyleSheet(theme_));
+}
+
 void MainWindow::saveSettings() {
   QSettings s(QStringLiteral("BeamAnalyzer"), QStringLiteral("BeamAnalyzer"));
   s.setValue(QStringLiteral("colorMap"), static_cast<int>(colorMap_));
@@ -858,12 +1183,16 @@ void MainWindow::saveSettings() {
   s.setValue(QStringLiteral("camGain_db"), camGainSpin_->value());
   s.setValue(QStringLiteral("camFps"), camFpsSpin_->value());
   s.setValue(QStringLiteral("triggerMode"), triggerModeBox_->currentIndex());
+  s.setValue(QStringLiteral("theme"), static_cast<int>(theme_));
+  s.setValue(QStringLiteral("recentFiles"), recentFiles_);
   s.setValue(QStringLiteral("geometry"), saveGeometry());
+  s.setValue(QStringLiteral("windowState"), saveState());
 }
 
 void MainWindow::loadSettings() {
   QSettings s(QStringLiteral("BeamAnalyzer"), QStringLiteral("BeamAnalyzer"));
-  const int cm = s.value(QStringLiteral("colorMap"), static_cast<int>(ColorMap::FalseColor)).toInt();
+  const int cm =
+      s.value(QStringLiteral("colorMap"), static_cast<int>(ColorMap::FalseColor)).toInt();
   const int cmIndex = colorMapBox_->findData(cm);
   if (cmIndex >= 0) {
     colorMapBox_->setCurrentIndex(cmIndex);
@@ -877,7 +1206,12 @@ void MainWindow::loadSettings() {
   camGainSpin_->setValue(s.value(QStringLiteral("camGain_db"), 0.0).toDouble());
   camFpsSpin_->setValue(s.value(QStringLiteral("camFps"), 15.0).toDouble());
   triggerModeBox_->setCurrentIndex(s.value(QStringLiteral("triggerMode"), 0).toInt());
+  theme_ = static_cast<AppTheme>(
+      s.value(QStringLiteral("theme"), static_cast<int>(AppTheme::Dark)).toInt());
+  recentFiles_ = s.value(QStringLiteral("recentFiles")).toStringList();
+  rebuildRecentMenu();
   restoreGeometry(s.value(QStringLiteral("geometry")).toByteArray());
+  restoreState(s.value(QStringLiteral("windowState")).toByteArray());
 }
 
 }  // namespace beam::ui
