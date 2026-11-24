@@ -42,9 +42,30 @@ void writeFitJson(std::ostream& out, const char* key, const beam::core::M2FitRes
   out << "  \"" << key << "\": {\n";
   out << "    \"valid\": " << (f.valid ? "true" : "false") << ",\n";
   out << "    \"m2\": " << f.m2 << ",\n";
+  out << "    \"m2_uncertainty\": " << f.m2Uncertainty << ",\n";
   out << "    \"waist_diameter_um\": " << f.waistDiameter_um << ",\n";
+  out << "    \"waist_diameter_uncertainty_um\": " << f.waistDiameterUncertainty_um << ",\n";
   out << "    \"waist_z_mm\": " << f.waistZ_mm << ",\n";
-  out << "    \"rms_residual\": " << f.rmsResidual << ",\n";
+  out << "    \"waist_z_uncertainty_mm\": " << f.waistZUncertainty_mm << ",\n";
+  out << "    \"rayleigh_range_mm\": " << f.rayleighRange_mm << ",\n";
+  out << "    \"rms_residual_um\": " << f.rmsResidual << ",\n";
+  out << "    \"rms_residual_d2\": " << f.rmsResidualD2 << ",\n";
+  out << "    \"relative_rms\": " << f.relativeRms << ",\n";
+  out << "    \"quality_flags\": " << f.qualityFlags << ",\n";
+  out << "    \"quality_flags_text\": \""
+      << escapeJson(beam::core::describeQualityFlags(f.qualityFlags)) << "\",\n";
+  out << "    \"residuals\": [\n";
+  for (std::size_t i = 0; i < f.residuals.size(); ++i) {
+    const auto& r = f.residuals[i];
+    out << "      {\"z_mm\": " << r.z_mm << ", \"measured_um\": " << r.measured_um
+        << ", \"fitted_um\": " << r.fitted_um << ", \"residual_um\": " << r.residual_um
+        << "}";
+    if (i + 1 < f.residuals.size()) {
+      out << ",";
+    }
+    out << "\n";
+  }
+  out << "    ],\n";
   out << "    \"message\": \"" << escapeJson(f.message) << "\"\n";
   out << "  }";
 }

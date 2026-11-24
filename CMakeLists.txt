@@ -15,6 +15,9 @@ add_subdirectory(libs/core)
 add_subdirectory(libs/io)
 add_subdirectory(libs/camera)
 
+# CLI scan session tool (no Qt) — always available for labs / CI.
+add_subdirectory(apps/beam_m2_scan)
+
 if(BEAM_BUILD_APP)
   add_subdirectory(apps/BeamAnalyzer)
 endif()

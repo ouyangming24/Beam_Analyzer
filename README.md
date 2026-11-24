@@ -8,7 +8,8 @@ Windows 桌面光束分析工具（Qt6 / C++），方向对标 Cinogy 类 ISO �
 | Phase 1 | 离线 CSV MVP + 相机端口 |
 | Phase 2 | 功率/ROI/剖面、M² 扫描 |
 | Phase 3 | 相机协议适配层（GenTL/UVC 桩 + Simulated 实时） |
-| **Phase 4（当前）** | **商用级 UI 打磨、图像导入/导出、动态指标、最近文件/拖放** |
+| Phase 4 | 商用级 UI 打磨、图像导入/导出、动态指标、最近文件/拖放 |
+| **Phase 5（当前）** | **鲁棒二阶矩/噪声、双曲线 \(M^2\)、电机粗扫→精扫、CLI、`docs/ALGORITHM.md`** |
 
 ## Phase 4 亮点
 
@@ -33,14 +34,24 @@ Windows 桌面光束分析工具（Qt6 / C++），方向对标 Cinogy 类 ISO �
 - 导出标注图像：`PNG/BMP/JPEG/TIFF`（BMP 走可移植库路径；其余走 Qt）
 - 帧历史滑条：暂停实时后可回看最近帧并刷新指标
 
+### Phase 5 — \(M^2\) / 电机扫描
+- 背景 + 噪声门限选项（绝对值 / 峰值比例 / \(n\sigma\)）
+- 双曲线 \(M^2\) 拟合：残差表、不确定度启发式、质量旗标；X/Y/合成或多轴单轴
+- 电机位置规划：可配置粗扫→精扫、`IStage` / `SimulatedStage` + 采集钩子
+- GUI：M² 对话框内仿真扫描、`D(z)` 曲线、报告/CSV 导出
+- CLI：`beam_m2_scan`（无 Qt）运行仿真会话并导出报告
+- 方法说明与文献/标准引用：[`docs/ALGORITHM.md`](docs/ALGORITHM.md)
+
 ## 仓库结构
 
 ```
-apps/BeamAnalyzer/   Qt6 Widgets 主程序（主题、Dock、拖放）
-libs/core/           ISO 11146、ROI/背景、功率、剖面、M²
+apps/BeamAnalyzer/   Qt6 Widgets 主程序（主题、Dock、拖放、M² 扫描）
+apps/beam_m2_scan/   无 Qt 的 M² 扫描 CLI
+libs/core/           ISO 11146、ROI/背景/噪声、功率、剖面、M²、电机扫描
 libs/io/             CSV + BMP 图像导入/标注导出 + 结果导出
 libs/camera/         ICamera、CameraRegistry、GenTL/UVC 桩、Simulated
-tests/core|camera|io 单元测试
+docs/ALGORITHM.md    算法与测量实践说明（ISO 11146 概念 + 参考文献）
+tests/core|camera|io 单元测试（含 TEM00 / 非理想 M² / 粗精扫）
 samples/data/        示例 CSV
 ```
 
@@ -86,12 +97,13 @@ ctest --test-dir build --output-on-failure
 ./build/apps/BeamAnalyzer/BeamAnalyzer
 ```
 
-仅库与测试（无 GUI）：
+仅库与测试（无 Qt GUI；仍构建 `beam_m2_scan` CLI）：
 
 ```bash
 cmake -S . -B build-libs -G Ninja -DBEAM_BUILD_APP=OFF
 cmake --build build-libs
 ctest --test-dir build-libs --output-on-failure
+./build-libs/apps/beam_m2_scan/beam_m2_scan --m2 1.0 --out-prefix /tmp/m2_demo
 ```
 
 ## 使用示例
@@ -102,6 +114,7 @@ ctest --test-dir build-libs --output-on-failure
 4. 停止预览后拖动 **帧历史** 滑条回看
 5. **导出标注图像…** 保存假彩色 + 十字线/ROI/指标条
 6. 视图菜单可切换深色/浅色主题；指标坞可浮动/关闭
+7. **M² 扫描…**：配置粗扫/精扫 → 运行仿真扫描 → 查看 `D(z)` → 导出报告
 
 ### 截图说明（自行截取）
 
@@ -117,15 +130,16 @@ ctest --test-dir build-libs --output-on-failure
 
 ## 接入真实 SDK
 
-保持 `ICamera` 稳定，向 `CameraRegistry` 注册厂商后端；默认构建不链接专有库。详见源码 `libs/camera` 与 Phase 3 注释。
+保持 `ICamera` 稳定，向 `CameraRegistry` 注册厂商后端；默认构建不链接专有库。详见源码 `libs/camera` 与 Phase 3 注释。  
+电机侧实现 `IStage`（当前提供 `SimulatedStage`），接入真实运动控制器后再接到粗扫→精扫会话。
 
 ## 路线图
 
 | 阶段 | 内容 |
 |------|------|
-| Phase 1–3 | 已合入 main |
-| Phase 4 | UI / 图像 I/O / 动态指标（本版本） |
-| 后续 | 硬件联调、标定向导、更完整的序列/报告工作流 |
+| Phase 1–4 | 已合入 main |
+| Phase 5 | \(M^2\) 拟合增强、电机粗扫/精扫、ALGORITHM.md |
+| 后续 | 真机相机/电机联调、标定向导、更完整的序列/报告工作流 |
 
 ## 许可
 
