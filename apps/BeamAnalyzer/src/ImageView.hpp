@@ -1,5 +1,7 @@
 #pragma once
 
+#include "beam/core/Aoi.hpp"
+#include "beam/core/Iso11146.hpp"
 #include "beam/core/Roi.hpp"
 
 #include <QLabel>
@@ -11,13 +13,13 @@ class QPaintEvent;
 
 namespace beam::ui {
 
-/// Displays a QPixmap with interactive ROI drag and crosshair / profile markers.
+/// Displays a QPixmap with interactive AOI drag, centroid cross, and beam ellipse.
 class ImageView final : public QLabel {
   Q_OBJECT
  public:
   enum class InteractionMode {
     None,
-    DrawRoi,
+    DrawAoi,
     PickCrosshair,
   };
 
@@ -29,8 +31,15 @@ class ImageView final : public QLabel {
   void setInteractionMode(InteractionMode mode);
   [[nodiscard]] InteractionMode interactionMode() const { return mode_; }
 
+  void setAoiShape(beam::core::AoiShape shape);
+  [[nodiscard]] beam::core::AoiShape aoiShape() const { return aoiShape_; }
+
+  void setAoi(const std::optional<beam::core::AoiRegion>& aoi);
+  [[nodiscard]] std::optional<beam::core::AoiRegion> aoi() const { return aoi_; }
+
+  /// Legacy rect ROI accessors (maps to rectangular AOI).
   void setRoi(const std::optional<beam::core::RectRoi>& roi);
-  [[nodiscard]] std::optional<beam::core::RectRoi> roi() const { return roi_; }
+  [[nodiscard]] std::optional<beam::core::RectRoi> roi() const;
 
   void setCrosshair(int x, int y);
   [[nodiscard]] QPoint crosshair() const { return crosshair_; }
@@ -39,8 +48,16 @@ class ImageView final : public QLabel {
   void setShowCrosshair(bool on);
   void setProfileLine(int x0, int y0, int x1, int y1, bool enabled);
 
+  /// Overlay second-moment centroid cross + principal-axis beam ellipse.
+  /// Metrics are in µm; pass detector pixel pitches for conversion to pixels.
+  void setBeamOverlay(const std::optional<beam::core::Iso11146Metrics>& metrics,
+                      bool enabled,
+                      double pixelSizeX_um = 1.0,
+                      double pixelSizeY_um = 1.0);
+
  signals:
-  void roiChanged(beam::core::RectRoi roi);
+  void aoiChanged(beam::core::AoiRegion aoi);
+  void roiChanged(beam::core::RectRoi roi);  ///< Emitted for rect AOI (compat)
   void crosshairChanged(int x, int y);
   void profileLineChanged(int x0, int y0, int x1, int y1);
 
@@ -51,17 +68,25 @@ class ImageView final : public QLabel {
   void paintEvent(QPaintEvent* event) override;
 
  private:
+  enum class DragMode { None, Create, Move };
+
   [[nodiscard]] QPoint frameFromWidget(const QPoint& widgetPos) const;
   [[nodiscard]] QRect widgetRectFromRoi(const beam::core::RectRoi& roi) const;
   [[nodiscard]] QPoint widgetFromFrame(int fx, int fy) const;
+  [[nodiscard]] QPointF widgetFromFrameF(double fx, double fy) const;
+  void paintAoi(QPainter& p) const;
+  void paintBeamOverlay(QPainter& p) const;
+  [[nodiscard]] bool aoiContainsWidget(const QPoint& widgetPos) const;
 
   QImage image_;
   int frameW_ = 0;
   int frameH_ = 0;
   InteractionMode mode_ = InteractionMode::None;
-  std::optional<beam::core::RectRoi> roi_;
-  bool dragging_ = false;
+  beam::core::AoiShape aoiShape_ = beam::core::AoiShape::Rect;
+  std::optional<beam::core::AoiRegion> aoi_;
+  DragMode dragMode_ = DragMode::None;
   QPoint dragStartFrame_;
+  beam::core::RectRoi dragStartBounds_{};
   QPoint crosshair_{0, 0};
   bool hasCrosshair_ = false;
   bool showCrosshair_ = true;
@@ -70,6 +95,10 @@ class ImageView final : public QLabel {
   int lineY0_ = 0;
   int lineX1_ = 0;
   int lineY1_ = 0;
+  std::optional<beam::core::Iso11146Metrics> beamMetrics_;
+  bool showBeamOverlay_ = false;
+  double overlayPitchX_um_ = 1.0;
+  double overlayPitchY_um_ = 1.0;
 };
 
 }  // namespace beam::ui

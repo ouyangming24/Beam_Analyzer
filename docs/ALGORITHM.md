@@ -106,16 +106,84 @@ ISO-style \(M^2\) needs enough planes spanning on the order of the Rayleigh rang
 
 Conversions inside the fit keep \(\lambda\), \(w_0\), and \(z\) consistent (µm internally for the Rayleigh formula).
 
-## 5. What this is / is not
+## 5. Area of Interest (AOI)
 
-- **Is:** Open, documented ISO-concept second moments + hyperbolic \(M^2\) + configurable coarse/fine scan hooks suitable for engineering use and unit testing.
-- **Is not:** A claim of accredited ISO 11146 certification, nor a dump of any commercial beam-profiler source code. Normative purchases of ISO standards remain the user’s responsibility for compliance work.
+An AOI restricts which pixels contribute to analysis. Shapes:
 
-## 6. Source map
+| Shape | Containment |
+|-------|-------------|
+| Rect | Inclusive axis-aligned box |
+| Circle | \((x-c_x)^2+(y-c_y)^2 \le r^2\) with \(r=\min(r_x,r_y)\) from the bounding box |
+| Ellipse | \(\bigl((x-c_x)/r_x\bigr)^2+\bigl((y-c_y)/r_y\bigr)^2 \le 1\) |
+
+`applyAoiMask` zeros intensity outside the AOI **without cropping**, so centroids remain in full-frame coordinates (µm from the detector origin). Auto-AOI places a box of half-width \(\mathrm{scale}\cdot d_\sigma/2\) about the second-moment centroid (`autoAoiFromCentroid`).
+
+Legacy `useRoi` crop path remains for backward-compatible rectangular ROI workflows.
+
+## 6. Uniformity & flatness (ISO 13694 concepts)
+
+On a prepared intensity map \(I(x,y)\), let \(I_\mathrm{peak}=\max I\) and choose a fraction \(\eta\in(0,1]\) (default \(0.5\)). The **effective irradiation area** \(A_\eta\) is the set of pixels with \(I\ge\eta\,I_\mathrm{peak}\).
+
+\[
+\bar I_\eta=\langle I\rangle_{A_\eta},\qquad
+F=\frac{I_\mathrm{peak}}{\bar I_\eta}\quad(\text{flatness factor}\ge 1),\qquad
+F_\mathrm{norm}=\frac{\bar I_\eta}{I_\mathrm{peak}}
+\]
+
+\[
+U=1-\frac{\sigma_\eta}{\bar I_\eta},\qquad
+U_{\mathrm{minmax}}=1-\frac{I_\mathrm{peak}-I_{\min,\eta}}{I_\mathrm{peak}+I_{\min,\eta}}
+\]
+
+where \(\sigma_\eta\) is the RMS deviation of \(I\) on \(A_\eta\). Entry: `computeIso13694(frame, eta)`.
+
+**References (concepts):** ISO 13694, *Optics and optical instruments — Lasers and laser-related equipment — Test methods for laser beam power (energy) density distribution*.
+
+## 7. Divergence & Beam Parameter Product (BPP)
+
+From a hyperbolic \(M^2\) fit with waist radius \(w_0=d_0/2\) and Rayleigh range \(z_R\):
+
+\[
+\theta=\frac{w_0}{z_R}\quad(\text{half-angle, rad}),\qquad
+\mathrm{BPP}=w_0\,\theta
+\]
+
+Reported as mrad and mm·mrad respectively (`divergenceFromM2Fit`). Full angle ≈ \(2\theta\). These are engineering diagnostics derived from the same embedded-Gaussian model as the \(M^2\) fit — **not** a standalone ISO divergence certificate.
+
+## 8. Position & pointing stability (ISO 11670 concepts)
+
+Given a time series of centroids \((x_i,y_i)\) (µm) and optional power:
+
+\[
+\sigma_x=\mathrm{std}(x),\quad \sigma_y=\mathrm{std}(y),\quad
+\Delta r=2\sqrt{\sigma_x^2+\sigma_y^2}
+\]
+
+With an effective focal length \(f\) (mm), angular pointing spreads are
+
+\[
+\sigma_{\theta x}\approx\frac{\sigma_x}{f}\ \mathrm{mrad},\quad
+\sigma_{\theta y}\approx\frac{\sigma_y}{f}\ \mathrm{mrad}
+\]
+
+(using \(\sigma\) in µm and \(f\) in mm so that \(\sigma/f\) is already in mrad). Entry: `computeStability(samples, focalLength_mm)`.
+
+**References (concepts):** ISO 11670, *… Test methods for laser beam parameters — Beam positional stability*.
+
+## 9. What this is / is not
+
+- **Is:** Open, documented ISO-concept second moments + hyperbolic \(M^2\) + AOI masking + ISO 13694/11670–style engineering metrics + configurable coarse/fine scan hooks suitable for engineering use and unit testing.
+- **Is not:** A claim of accredited ISO 11146 / 13694 / 11670 certification, nor a dump of any commercial beam-profiler source code or brand assets. Normative purchases of ISO standards remain the user’s responsibility for compliance work.
+
+## 10. Source map
 
 | Component | Headers / sources |
 |-----------|-------------------|
 | Moments + noise | `Iso11146.hpp`, `MomentOptions.hpp`, `Roi.hpp` |
+| AOI shapes / mask | `Aoi.hpp` / `Aoi.cpp` |
+| Uniformity / flatness | `Iso13694.hpp` / `Iso13694.cpp` |
+| Stability | `Stability.hpp` / `Stability.cpp` |
+| Divergence / BPP | `Divergence.hpp` / `Divergence.cpp` |
 | \(M^2\) fit | `M2Fit.hpp` / `M2Fit.cpp` |
 | Multi-axis scan result | `M2Scan.hpp` / `M2Scan.cpp` |
 | Motor plan + session | `MotorScan.hpp` / `MotorScan.cpp` |

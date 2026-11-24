@@ -1,4 +1,5 @@
 #include "beam/core/Roi.hpp"
+#include "beam/core/Aoi.hpp"
 
 #include <algorithm>
 #include <cmath>
@@ -128,6 +129,20 @@ BeamFrame cropToRoi(const BeamFrame& frame, const RectRoi& roi) {
 BeamFrame prepareAnalysisFrame(const BeamFrame& frame, const AnalysisPrep& prep) {
   if (frame.empty()) {
     return {};
+  }
+
+  // Preferred path: shaped AOI mask keeps full-frame coordinates.
+  if (prep.useAoi && !prep.aoiBounds.empty()) {
+    AoiRegion aoi;
+    aoi.shape = static_cast<AoiShape>(prep.aoiShape);
+    aoi.bounds = prep.aoiBounds;
+    BeamFrame work = frame;
+    const RectRoi* roiPtr = &prep.aoiBounds;
+    if (prep.background.mode != BackgroundMode::None) {
+      const double level = estimateBackground(frame, prep.background, roiPtr);
+      work = subtractBackground(frame, level, prep.background.clipNegative);
+    }
+    return applyAoiMask(work, aoi);
   }
 
   BeamFrame work = frame;

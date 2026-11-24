@@ -1,5 +1,7 @@
 #include "MainWindow.hpp"
 
+#include "AnalysisDialog.hpp"
+#include "IntensitySurface3D.hpp"
 #include "M2ScanDialog.hpp"
 #include "MetricsPanel.hpp"
 #include "ProfilePlot.hpp"
@@ -12,10 +14,12 @@
 #include <QApplication>
 #include <QCheckBox>
 #include <QComboBox>
+#include <QDir>
 #include <QDockWidget>
 #include <QDoubleSpinBox>
 #include <QDragEnterEvent>
 #include <QDropEvent>
+#include <QEvent>
 #include <QFileDialog>
 #include <QFileInfo>
 #include <QFormLayout>
@@ -28,6 +32,7 @@
 #include <QMenuBar>
 #include <QMessageBox>
 #include <QMimeData>
+#include <QMouseEvent>
 #include <QPushButton>
 #include <QScrollArea>
 #include <QSettings>
@@ -37,6 +42,7 @@
 #include <QSplitter>
 #include <QStatusBar>
 #include <QStyle>
+#include <QTabWidget>
 #include <QTimer>
 #include <QToolBar>
 #include <QUrl>
@@ -134,6 +140,46 @@ MainWindow::~MainWindow() {
   saveSettings();
 }
 
+void MainWindow::captureDemoShots(const QString& outDir) {
+  QDir().mkpath(outDir);
+  loadSimulatedFrame();
+  onAutoAoi();
+  // Allow paint/layout to settle.
+  QApplication::processEvents();
+  QApplication::processEvents();
+
+  const QString mainPath = outDir + QStringLiteral("/cinogy-ui-main.png");
+  if (!grab().save(mainPath, "PNG")) {
+    statusLabel_->setText(QStringLiteral("截图失败: main"));
+  }
+
+  if (surface3d_) {
+    // Emulate a slight rotation so the mountain reads clearly.
+    QMouseEvent press(QEvent::MouseButtonPress, QPointF(80, 80), QPointF(80, 80),
+                      Qt::LeftButton, Qt::LeftButton, Qt::NoModifier);
+    QMouseEvent move(QEvent::MouseMove, QPointF(140, 100), QPointF(140, 100),
+                     Qt::LeftButton, Qt::LeftButton, Qt::NoModifier);
+    QMouseEvent release(QEvent::MouseButtonRelease, QPointF(140, 100), QPointF(140, 100),
+                        Qt::LeftButton, Qt::NoButton, Qt::NoModifier);
+    QApplication::sendEvent(surface3d_, &press);
+    QApplication::sendEvent(surface3d_, &move);
+    QApplication::sendEvent(surface3d_, &release);
+    QApplication::processEvents();
+    surface3d_->grab().save(outDir + QStringLiteral("/cinogy-ui-3d.png"), "PNG");
+  }
+
+  openAnalysis();
+  QApplication::processEvents();
+  if (analysisDialog_) {
+    if (auto* tabs = analysisDialog_->findChild<QTabWidget*>()) {
+      tabs->setCurrentIndex(1);  // 二维/三维能量
+    }
+    analysisDialog_->resize(1100, 720);
+    QApplication::processEvents();
+    analysisDialog_->grab().save(outDir + QStringLiteral("/cinogy-ui-analysis.png"), "PNG");
+  }
+}
+
 void MainWindow::rebuildUi() {
   auto* fileMenu = menuBar()->addMenu(QStringLiteral("文件(&F)"));
   auto* openAct = fileMenu->addAction(QStringLiteral("打开…"));
@@ -176,13 +222,24 @@ void MainWindow::rebuildUi() {
   tool->addAction(exportImageAction_);
   tool->addAction(QStringLiteral("导出功率…"), this, &MainWindow::exportPower);
   tool->addSeparator();
-  roiModeAction_ = tool->addAction(QStringLiteral("框选 ROI"));
+  tool->addWidget(new QLabel(QStringLiteral(" AOI ")));
+  aoiShapeBox_ = new QComboBox;
+  aoiShapeBox_->addItem(QStringLiteral("矩形"), static_cast<int>(beam::core::AoiShape::Rect));
+  aoiShapeBox_->addItem(QStringLiteral("圆形"), static_cast<int>(beam::core::AoiShape::Circle));
+  aoiShapeBox_->addItem(QStringLiteral("椭圆"), static_cast<int>(beam::core::AoiShape::Ellipse));
+  connect(aoiShapeBox_, QOverload<int>::of(&QComboBox::currentIndexChanged), this,
+          &MainWindow::onAoiShapeChanged);
+  tool->addWidget(aoiShapeBox_);
+  roiModeAction_ = tool->addAction(QStringLiteral("绘制 AOI"));
   roiModeAction_->setCheckable(true);
   connect(roiModeAction_, &QAction::toggled, this, &MainWindow::onRoiModeToggled);
-  tool->addAction(QStringLiteral("清除 ROI"), this, &MainWindow::onClearRoi);
+  tool->addAction(QStringLiteral("自动 AOI"), this, &MainWindow::onAutoAoi);
+  tool->addAction(QStringLiteral("清除 AOI"), this, &MainWindow::onClearRoi);
   tool->addSeparator();
+  auto* analysisAct =
+      tool->addAction(QStringLiteral("完整分析…"), this, &MainWindow::openAnalysis);
+  analysisAct->setObjectName(QStringLiteral("PrimaryAction"));
   auto* m2Act = tool->addAction(QStringLiteral("M² 工作站…"), this, &MainWindow::openM2Scan);
-  m2Act->setObjectName(QStringLiteral("PrimaryAction"));
   tool->addSeparator();
   tool->addWidget(new QLabel(QStringLiteral(" 色图 ")));
   colorMapBox_ = new QComboBox;
@@ -259,10 +316,14 @@ void MainWindow::rebuildUi() {
   leftSplit->addWidget(imageChrome);
 
   imageView_ = new ImageView;
+  connect(imageView_, &ImageView::aoiChanged, this, &MainWindow::onAoiChanged);
   connect(imageView_, &ImageView::roiChanged, this, &MainWindow::onRoiChanged);
   connect(imageView_, &ImageView::crosshairChanged, this, &MainWindow::onCrosshairChanged);
   imageView_->clearFrame();
 
+  auto* viewSplit = new QSplitter(Qt::Horizontal);
+  viewSplit->setObjectName(QStringLiteral("ViewSplit2D3D"));
+  viewSplit->setChildrenCollapsible(false);
   auto* scroll = new QScrollArea;
   scroll->setWidgetResizable(true);
   scroll->setFrameShape(QFrame::NoFrame);
@@ -270,7 +331,13 @@ void MainWindow::rebuildUi() {
   scroll->setVerticalScrollBarPolicy(Qt::ScrollBarAsNeeded);
   scroll->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
   scroll->setWidget(imageView_);
-  leftSplit->addWidget(scroll);
+  surface3d_ = new IntensitySurface3D;
+  viewSplit->addWidget(scroll);
+  viewSplit->addWidget(surface3d_);
+  viewSplit->setStretchFactor(0, 3);
+  viewSplit->setStretchFactor(1, 2);
+  viewSplit->setSizes({640, 420});
+  leftSplit->addWidget(viewSplit);
 
   auto* scrubRow = new QWidget;
   scrubRow->setObjectName(QStringLiteral("PlayerBar"));
@@ -435,7 +502,7 @@ void MainWindow::rebuildUi() {
   toolsForm->setSpacing(4);
   toolsForm->setContentsMargins(8, 12, 8, 6);
 
-  useRoiCheck_ = new QCheckBox(QStringLiteral("启用 ROI"));
+  useRoiCheck_ = new QCheckBox(QStringLiteral("启用 AOI"));
   connect(useRoiCheck_, &QCheckBox::toggled, this, [this](bool) { onRecompute(); });
   toolsForm->addRow(useRoiCheck_);
 
@@ -991,9 +1058,13 @@ void MainWindow::onIntensityScaleChanged(int index) {
 
 beam::core::AnalysisPrep MainWindow::currentPrep() const {
   beam::core::AnalysisPrep prep;
-  prep.useRoi = useRoiCheck_->isChecked() && roi_.has_value() && !roi_->empty();
-  if (roi_) {
-    prep.roi = *roi_;
+  const bool aoiOn = useRoiCheck_->isChecked() && aoi_.has_value() && !aoi_->empty();
+  if (aoiOn) {
+    // Prefer mask path so centroids stay in full-frame coordinates.
+    prep.useAoi = true;
+    prep.aoiBounds = aoi_->bounds;
+    prep.aoiShape = static_cast<int>(aoi_->shape);
+    prep.useRoi = false;
   }
   prep.background.mode =
       static_cast<beam::core::BackgroundMode>(backgroundBox_->currentData().toInt());
@@ -1078,7 +1149,14 @@ void MainWindow::refreshAnalysis() {
   }
   analysisFrame_ = beam::core::prepareAnalysisFrame(*rawFrame_, currentPrep());
   metrics_ = beam::core::computeIso11146(*analysisFrame_);
+  iso13694_ = beam::core::computeIso13694(*analysisFrame_, 0.5);
   power_ = beam::core::computePowerMetrics(*analysisFrame_, currentCalibration());
+  if (metrics_ && metrics_->valid && analysisDialog_ && analysisDialog_->isVisible()) {
+    analysisDialog_->setFrame(*rawFrame_, *metrics_, power_, aoi_, wavelengthSpin_->value());
+    analysisDialog_->pushStabilitySample(stabilityT_, metrics_->centroidX_um,
+                                         metrics_->centroidY_um, metrics_->totalPower);
+    stabilityT_ += 1.0 / std::max(1.0, camFpsSpin_->value());
+  }
   refreshImage();
   refreshProfiles();
   refreshMetricsPanel();
@@ -1099,8 +1177,17 @@ void MainWindow::refreshImage() {
                          Qt::FastTransformation);
   imageView_->setDisplayImage(displayScaled, static_cast<int>(rawFrame_->width),
                               static_cast<int>(rawFrame_->height));
-  if (roi_) {
-    imageView_->setRoi(roi_);
+  if (aoi_) {
+    imageView_->setAoi(aoi_);
+  } else {
+    imageView_->setAoi(std::nullopt);
+  }
+  imageView_->setBeamOverlay(metrics_, metrics_ && metrics_->valid, rawFrame_->pixelSizeX_um,
+                             rawFrame_->pixelSizeY_um);
+  if (surface3d_) {
+    surface3d_->setFrame(analysisFrame_ ? *analysisFrame_ : *rawFrame_);
+    surface3d_->setAoi(aoi_);
+    surface3d_->setBeamOverlay(metrics_);
   }
 }
 
@@ -1113,15 +1200,10 @@ void MainWindow::refreshProfiles() {
   const beam::core::BeamFrame* src = rawFrame_.operator->();
   int cx = crossX_;
   int cy = crossY_;
+  // AOI mask path keeps full-frame size — prefer analysis frame directly.
   if (analysisFrame_ && analysisFrame_->width == rawFrame_->width &&
       analysisFrame_->height == rawFrame_->height) {
     src = analysisFrame_.operator->();
-  } else if (useRoiCheck_->isChecked() && roi_ && analysisFrame_) {
-    if (roi_->contains(crossX_, crossY_)) {
-      src = analysisFrame_.operator->();
-      cx = crossX_ - roi_->x0;
-      cy = crossY_ - roi_->y0;
-    }
   }
 
   const auto cross = beam::core::extractCrosshair(*src, cx, cy);
@@ -1147,8 +1229,12 @@ void MainWindow::refreshMetricsPanel() {
   if (activeCamera_ && activeCamera_->isOpen()) {
     camCopy = activeCamera_->controls();
   }
-  metricsPanel_->updateMetrics(*metrics_, power_, rawFrame_ ? &(*rawFrame_) : nullptr, roi_,
-                               useRoiCheck_->isChecked(), crossX_, crossY_,
+  std::optional<beam::core::RectRoi> roiBounds;
+  if (aoi_) {
+    roiBounds = aoi_->bounds;
+  }
+  metricsPanel_->updateMetrics(*metrics_, power_, rawFrame_ ? &(*rawFrame_) : nullptr,
+                               roiBounds, useRoiCheck_->isChecked(), crossX_, crossY_,
                                camCopy ? &(*camCopy) : nullptr);
 }
 
@@ -1343,9 +1429,9 @@ void MainWindow::exportAnnotatedImage() {
                                                     : beam::io::ExportColorMap::FalseColor;
   opt.crossX = crossX_;
   opt.crossY = crossY_;
-  opt.hasRoi = roi_.has_value() && useRoiCheck_->isChecked();
+  opt.hasRoi = aoi_.has_value() && useRoiCheck_->isChecked() && !aoi_->empty();
   if (opt.hasRoi) {
-    opt.roi = *roi_;
+    opt.roi = aoi_->bounds;
   }
   if (metrics_ && metrics_->valid) {
     char buf[160];
@@ -1423,14 +1509,15 @@ void MainWindow::onColorMapChanged(int index) {
 }
 
 void MainWindow::onRoiModeToggled(bool on) {
-  imageView_->setInteractionMode(on ? ImageView::InteractionMode::DrawRoi
+  imageView_->setAoiShape(aoiShape_);
+  imageView_->setInteractionMode(on ? ImageView::InteractionMode::DrawAoi
                                     : ImageView::InteractionMode::None);
-  statusLabel_->setText(on ? QStringLiteral("拖拽框选 ROI…") : QStringLiteral("就绪"));
+  statusLabel_->setText(on ? QStringLiteral("拖拽绘制/拖动 AOI…") : QStringLiteral("就绪"));
 }
 
 void MainWindow::onClearRoi() {
-  roi_.reset();
-  imageView_->setRoi(std::nullopt);
+  aoi_.reset();
+  imageView_->setAoi(std::nullopt);
   useRoiCheck_->setChecked(false);
   if (roiModeAction_->isChecked()) {
     roiModeAction_->setChecked(false);
@@ -1439,12 +1526,52 @@ void MainWindow::onClearRoi() {
 }
 
 void MainWindow::onRoiChanged(beam::core::RectRoi roi) {
-  roi_ = roi;
+  beam::core::AoiRegion a = beam::core::aoiFromRect(roi);
+  a.shape = aoiShape_;
+  onAoiChanged(a);
+}
+
+void MainWindow::onAoiChanged(beam::core::AoiRegion aoi) {
+  aoi.shape = aoiShape_;
+  aoi_ = aoi;
   useRoiCheck_->setChecked(true);
   if (roiModeAction_->isChecked()) {
     roiModeAction_->setChecked(false);
   }
   onRecompute();
+}
+
+void MainWindow::onAoiShapeChanged(int index) {
+  aoiShape_ = static_cast<beam::core::AoiShape>(aoiShapeBox_->itemData(index).toInt());
+  imageView_->setAoiShape(aoiShape_);
+  if (aoi_) {
+    aoi_->shape = aoiShape_;
+    imageView_->setAoi(aoi_);
+    if (useRoiCheck_->isChecked()) {
+      onRecompute();
+    }
+  }
+}
+
+void MainWindow::onAutoAoi() {
+  if (!rawFrame_) {
+    QMessageBox::information(this, QStringLiteral("自动 AOI"),
+                             QStringLiteral("请先加载一帧。"));
+    return;
+  }
+  // Compute on full frame first, then place AOI.
+  const auto m = beam::core::computeIso11146(*rawFrame_);
+  if (!m.valid) {
+    QMessageBox::warning(this, QStringLiteral("自动 AOI"),
+                         QStringLiteral("无法从当前帧估计质心/直径。"));
+    return;
+  }
+  aoi_ = beam::core::autoAoiFromCentroid(m.centroidX_um, m.centroidY_um, m.diameterX_um,
+                                         m.diameterY_um, *rawFrame_, aoiShape_, 2.0);
+  imageView_->setAoi(aoi_);
+  useRoiCheck_->setChecked(true);
+  onRecompute();
+  statusLabel_->setText(QStringLiteral("已自动放置 AOI（≈ ±dσ）"));
 }
 
 void MainWindow::onCrosshairChanged(int x, int y) {
@@ -1482,6 +1609,21 @@ void MainWindow::openM2Scan() {
     dlg.seedFromCurrentFrame(metrics_->diameterX_um, metrics_->diameterY_um, sourcePath_);
   }
   dlg.exec();
+}
+
+void MainWindow::openAnalysis() {
+  if (!rawFrame_ || !metrics_ || !metrics_->valid) {
+    QMessageBox::information(this, QStringLiteral("完整分析"),
+                             QStringLiteral("请先加载有效光斑帧。"));
+    return;
+  }
+  if (!analysisDialog_) {
+    analysisDialog_ = new AnalysisDialog(this);
+  }
+  analysisDialog_->setFrame(*rawFrame_, *metrics_, power_, aoi_, wavelengthSpin_->value());
+  analysisDialog_->show();
+  analysisDialog_->raise();
+  analysisDialog_->activateWindow();
 }
 
 void MainWindow::toggleTheme() {
