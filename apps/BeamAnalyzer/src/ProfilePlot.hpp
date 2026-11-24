@@ -3,16 +3,24 @@
 #include "beam/core/Profile.hpp"
 
 #include <QWidget>
+#include <vector>
 
 namespace beam::ui {
 
-/// Lightweight 1D profile plot (no external chart dependency).
+/// Lightweight 1D plot (profiles or D(z); no external chart dependency).
 class ProfilePlot final : public QWidget {
   Q_OBJECT
  public:
   explicit ProfilePlot(QWidget* parent = nullptr);
 
   void setProfile(const beam::core::LineProfile& profile, const QString& title);
+  /// Generic XY series (e.g. z_mm vs diameter_um). Optional second series overlay.
+  void setSeries(const std::vector<double>& x,
+                 const std::vector<double>& y,
+                 const QString& title,
+                 const QString& xLabel = QString(),
+                 const QString& yLabel = QString());
+  void setOverlaySeries(const std::vector<double>& x, const std::vector<double>& y);
   void clearProfile();
 
  protected:
@@ -21,8 +29,13 @@ class ProfilePlot final : public QWidget {
   QSize minimumSizeHint() const override { return {200, 100}; }
 
  private:
-  beam::core::LineProfile profile_;
+  std::vector<double> x_;
+  std::vector<double> y_;
+  std::vector<double> overlayX_;
+  std::vector<double> overlayY_;
   QString title_;
+  QString xLabel_;
+  QString yLabel_;
 };
 
 }  // namespace beam::ui

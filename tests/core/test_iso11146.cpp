@@ -1,6 +1,8 @@
 #include "beam/core/Iso11146.hpp"
 #include "beam/core/M2Fit.hpp"
 #include "beam/core/M2Scan.hpp"
+#include "beam/core/MomentOptions.hpp"
+#include "beam/core/MotorScan.hpp"
 #include "beam/core/PowerMetrics.hpp"
 #include "beam/core/Profile.hpp"
 #include "beam/core/Roi.hpp"
@@ -218,6 +220,107 @@ int main() {
         makeGaussianFrame(16, 16, 8, 8, 2, 2), 8);
     expectTrue(beam::io::exportProfileCsv((dir / "prof.csv").string(), h, {"", "p"}),
                "export profile csv");
+  }
+
+  // --- Phase 5: noise floor + MomentOptions ---
+  {
+    // Ideal clean Gaussian: Absolute floor must not destroy 4σ≈32 µm.
+    auto clean = makeGaussianFrame(96, 96, 48.0, 48.0, 8.0, 8.0, 20.0, 1.0, 1.0, 0.0);
+    beam::core::MomentOptions soft;
+    soft.noise.mode = beam::core::NoiseFloorMode::Absolute;
+    soft.noise.absoluteLevel = 0.05;  // tiny vs peak=20
+    const auto softM = computeIso11146(clean, soft);
+    expectTrue(softM.valid, "MomentOptions metrics valid");
+    expectNear(softM.appliedNoiseFloor, 0.05, 1e-12, "noise floor applied");
+    expectNear(softM.diameterX_um, 32.0, 2.0, "soft Absolute floor keeps 4σ");
+
+    // High pedestal + noise: FractionOfPeak after constant bg should shrink Dx vs raw.
+    auto noisy = beam::core::addGaussianNoise(
+        makeGaussianFrame(96, 96, 48.0, 48.0, 8.0, 8.0, 20.0, 1.0, 1.0, 2.0), 0.8, 7);
+    beam::core::MomentOptions rawOpt;
+    const auto raw = computeIso11146(noisy, rawOpt);
+    beam::core::MomentOptions gated;
+    gated.prep.background.mode = beam::core::BackgroundMode::Constant;
+    gated.prep.background.constantValue = 2.0;
+    gated.noise.mode = beam::core::NoiseFloorMode::FractionOfPeak;
+    gated.noise.fractionOfPeak = 0.05;
+    const auto m = computeIso11146(noisy, gated);
+    expectTrue(m.valid && raw.valid, "raw and gated metrics valid");
+    expectTrue(m.pixelsUsed < noisy.width * noisy.height, "noise gate drops some pixels");
+    expectTrue(m.diameterX_um < raw.diameterX_um, "noise gate reduces noise-inflated Dx");
+  }
+
+  // --- Phase 5: TEM00 M²≈1 with residuals / flags ---
+  {
+    const double lambda_nm = 1064.0;
+    const double d0_um = 120.0;
+    std::vector<beam::core::M2Sample> samples;
+    for (double z = -30.0; z <= 30.0 + 1e-9; z += 5.0) {
+      samples.push_back(
+          {z, beam::core::hyperbolicDiameter_um(z, d0_um, 0.0, 1.0, lambda_nm), 1.0});
+    }
+    const auto fit = beam::core::fitM2(samples, lambda_nm);
+    expectTrue(fit.valid, "TEM00 fit valid");
+    expectNear(fit.m2, 1.0, 0.08, "TEM00 M2≈1");
+    expectTrue(fit.residuals.size() == samples.size(), "residuals per sample");
+    expectTrue(fit.rmsResidual < 1.0, "low RMS residual for exact hyperbola");
+    expectTrue(fit.qualityFlags == beam::core::M2QualityOk ||
+                   (fit.qualityFlags & beam::core::M2QualityTooFewPoints) == 0,
+               "no severe quality flags for good TEM00");
+  }
+
+  // --- Phase 5: non-ideal M²≈2.5 ---
+  {
+    const double lambda_nm = 532.0;
+    const double d0_um = 80.0;
+    const double m2True = 2.5;
+    std::vector<beam::core::M2Sample> samples;
+    for (double z = -25.0; z <= 25.0 + 1e-9; z += 5.0) {
+      samples.push_back(
+          {z, beam::core::hyperbolicDiameter_um(z, d0_um, 2.0, m2True, lambda_nm), 1.0});
+    }
+    const auto fit = beam::core::fitM2(samples, lambda_nm);
+    expectTrue(fit.valid, "non-ideal fit valid");
+    expectNear(fit.m2, m2True, 0.2, "non-ideal M2≈2.5");
+    expectNear(fit.waistZ_mm, 2.0, 1.0, "non-ideal waist z");
+  }
+
+  // --- Phase 5: motor coarse→fine session ---
+  {
+    beam::core::ScanSessionConfig cfg;
+    cfg.wavelength_nm = 1064.0;
+    cfg.coarse = {-40.0, 40.0, 10.0};
+    cfg.fine = {6.0, 1.5, true, 1e-3};
+    cfg.runFineAfterCoarse = true;
+
+    beam::core::SyntheticBeamModel model;
+    model.wavelength_nm = 1064.0;
+    model.m2X = 1.0;
+    model.m2Y = 1.3;
+    model.waistDiameterX_um = 90.0;
+    model.waistDiameterY_um = 95.0;
+    model.waistZ_mm = 3.0;
+
+    const auto coarseOnly = beam::core::planCoarsePositions(cfg.coarse);
+    expectTrue(coarseOnly.size() >= 5, "coarse plan has several stations");
+
+    beam::core::SimulatedStage stage(cfg.coarse.zStart_mm);
+    auto acquire = beam::core::makeSyntheticAcquire(model);
+    const auto session = beam::core::runScanSession(stage, acquire, cfg);
+    expectTrue(session.valid, "scan session valid");
+    expectTrue(session.points.size() > coarseOnly.size(), "fine adds points");
+    expectNear(session.full.fitX.m2, 1.0, 0.15, "session M2_X≈1");
+    expectNear(session.full.fitY.m2, 1.3, 0.2, "session M2_Y≈1.3");
+
+    const std::string csv = beam::core::formatDzCurveCsv(session.full);
+    expectTrue(csv.find("z_mm") != std::string::npos, "D(z) CSV header");
+    const std::string plot = beam::core::formatDzAsciiPlot(session.full);
+    expectTrue(plot.find("D(z)") != std::string::npos, "ASCII D(z) plot");
+
+    // Single-axis API
+    const auto sx =
+        beam::core::analyzeM2ScanSingleAxis(session.points, cfg.wavelength_nm, false);
+    expectTrue(sx.valid && sx.fitX.valid, "single-axis X fit");
   }
 
   if (gFailures != 0) {

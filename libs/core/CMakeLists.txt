@@ -3,6 +3,7 @@ add_library(beam_core
   src/Iso11146.cpp
   src/M2Fit.cpp
   src/M2Scan.cpp
+  src/MotorScan.cpp
   src/Roi.cpp
   src/PowerMetrics.cpp
   src/Profile.cpp
