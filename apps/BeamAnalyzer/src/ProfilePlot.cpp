@@ -92,12 +92,25 @@ void ProfilePlot::setZeroLineEnabled(bool enabled) {
   update();
 }
 
+void ProfilePlot::setHighlightRange(double x0, double x1, bool enabled) {
+  highlightRange_ = enabled;
+  highlightX0_ = std::min(x0, x1);
+  highlightX1_ = std::max(x0, x1);
+  update();
+}
+
+void ProfilePlot::clearHighlightRange() {
+  highlightRange_ = false;
+  update();
+}
+
 void ProfilePlot::clearProfile() {
   series_.clear();
   title_.clear();
   xLabel_.clear();
   yLabel_.clear();
   zeroLine_ = false;
+  highlightRange_ = false;
   update();
 }
 
@@ -189,6 +202,19 @@ void ProfilePlot::paintEvent(QPaintEvent*) {
     const int y0 = static_cast<int>(std::lround(bottom - yn0 * (bottom - top)));
     p.setPen(QPen(QColor(fg.red(), fg.green(), fg.blue(), 120), 1, Qt::DashLine));
     p.drawLine(left, y0, right, y0);
+  }
+
+  if (highlightRange_) {
+    const auto toX = [&](double xv) {
+      const double xn = (xv - x0) / xSpan;
+      return static_cast<int>(std::lround(left + xn * (right - left)));
+    };
+    const int xa = std::clamp(toX(highlightX0_), left, right);
+    const int xb = std::clamp(toX(highlightX1_), left, right);
+    p.fillRect(QRect(QPoint(xa, top), QPoint(xb, bottom)), QColor(0, 220, 255, 28));
+    p.setPen(QPen(QColor(0, 220, 255, 180), 1, Qt::DashLine));
+    p.drawLine(xa, top, xa, bottom);
+    p.drawLine(xb, top, xb, bottom);
   }
 
   auto toPoly = [&](const std::vector<double>& xs, const std::vector<double>& ys) {

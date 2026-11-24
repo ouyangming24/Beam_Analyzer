@@ -68,7 +68,7 @@ class ImageView final : public QLabel {
   void paintEvent(QPaintEvent* event) override;
 
  private:
-  enum class DragMode { None, Create, Move };
+  enum class DragMode { None, Create, Move, Crosshair };
 
   [[nodiscard]] QPoint frameFromWidget(const QPoint& widgetPos) const;
   [[nodiscard]] QRect widgetRectFromRoi(const beam::core::RectRoi& roi) const;
@@ -76,6 +76,7 @@ class ImageView final : public QLabel {
   [[nodiscard]] QPointF widgetFromFrameF(double fx, double fy) const;
   void paintAoi(QPainter& p) const;
   void paintBeamOverlay(QPainter& p) const;
+  void paintOverlayLegend(QPainter& p) const;
   [[nodiscard]] bool aoiContainsWidget(const QPoint& widgetPos) const;
 
   QImage image_;

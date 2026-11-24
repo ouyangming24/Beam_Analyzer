@@ -393,9 +393,21 @@ int main() {
     expectTrue(m.valid, "AOI source metrics valid");
     auto aoi = beam::core::autoAoiFromCentroid(m.centroidX_um, m.centroidY_um,
                                                m.diameterX_um, m.diameterY_um, frame,
-                                               beam::core::AoiShape::Ellipse, 2.0);
+                                               beam::core::AoiShape::Ellipse, 1.5);
     expectTrue(!aoi.empty(), "auto ellipse AOI non-empty");
     expectTrue(aoi.containsPx(64.0, 64.0), "AOI contains centroid");
+    // Default/tight scale 1.5 must be smaller than legacy scale 2.0.
+    const auto aoiLoose =
+        beam::core::autoAoiFromCentroid(m.centroidX_um, m.centroidY_um, m.diameterX_um,
+                                        m.diameterY_um, frame, beam::core::AoiShape::Ellipse,
+                                        2.0);
+    expectTrue(aoi.bounds.width() < aoiLoose.bounds.width() ||
+                   aoi.bounds.height() < aoiLoose.bounds.height(),
+               "scale 1.5 AOI tighter than scale 2.0");
+    // Axis length ≈ scale · dσ (in pixels): half-width = scale·dσ/(2·pitch).
+    const double expectHalfW = 1.5 * 0.5 * m.diameterX_um / pixel;
+    expectNear(static_cast<double>(aoi.bounds.width()) * 0.5, expectHalfW, 2.0,
+               "auto AOI half-width ≈ 1.5·dσ/2");
     const auto masked = beam::core::applyAoiMask(frame, aoi);
     const auto mm = computeIso11146(masked);
     expectTrue(mm.valid, "masked AOI metrics valid");
@@ -408,7 +420,7 @@ int main() {
     aoi.shape = beam::core::AoiShape::Circle;
     prep.aoiBounds = beam::core::autoAoiFromCentroid(m.centroidX_um, m.centroidY_um,
                                                      m.diameterX_um, m.diameterY_um, frame,
-                                                     beam::core::AoiShape::Circle, 2.0)
+                                                     beam::core::AoiShape::Circle, 1.5)
                          .bounds;
     const auto prepared = beam::core::prepareAnalysisFrame(frame, prep);
     expectTrue(prepared.width == frame.width, "AOI prep keeps frame size");

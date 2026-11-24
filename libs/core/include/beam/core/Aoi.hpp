@@ -47,14 +47,16 @@ struct AoiRegion {
 [[nodiscard]] BeamFrame applyAoiMask(const BeamFrame& frame, const AoiRegion& aoi);
 
 /// Build an elliptical (or circular / rect) AOI around a centroid.
-/// Diameters are ISO dσ (µm); `scale` multiplies half-widths (default 2).
+/// Diameters are ISO dσ = 4σ (µm). Half-widths are `scale · dσ / 2`, so the
+/// AOI axis lengths equal `scale · dσ` (default 1.5 ≈ tight enclosure around
+/// the 4σ beam; raise toward 2–3 for more background margin).
 [[nodiscard]] AoiRegion autoAoiFromCentroid(double centroidX_um,
                                             double centroidY_um,
                                             double diameterX_um,
                                             double diameterY_um,
                                             const BeamFrame& frame,
                                             AoiShape shape = AoiShape::Ellipse,
-                                            double scale = 2.0);
+                                            double scale = 1.5);
 
 /// Convert legacy RectRoi → rectangular AOI.
 [[nodiscard]] inline AoiRegion aoiFromRect(const RectRoi& roi) {

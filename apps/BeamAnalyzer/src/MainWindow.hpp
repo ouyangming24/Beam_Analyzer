@@ -146,6 +146,8 @@ class AnalysisDialog;
   QComboBox* colorMapBox_ = nullptr;
   QComboBox* intensityScaleBox_ = nullptr;
   QComboBox* aoiShapeBox_ = nullptr;
+  QDoubleSpinBox* autoAoiScaleSpin_ = nullptr;
+  QLabel* profilesHeaderLabel_ = nullptr;
   QPushButton* playBtn_ = nullptr;
   QTimer* playTimer_ = nullptr;
   QComboBox* backgroundBox_ = nullptr;
