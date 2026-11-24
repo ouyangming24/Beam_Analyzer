@@ -1,11 +1,14 @@
 #include "MainWindow.hpp"
 
 #include "AnalysisDialog.hpp"
+#include "CalibrationWizard.hpp"
 #include "IntensitySurface3D.hpp"
 #include "M2ScanDialog.hpp"
 #include "MetricsPanel.hpp"
 #include "ProfilePlot.hpp"
 
+#include "beam/core/BeamWidths.hpp"
+#include "beam/core/FrameBuffer.hpp"
 #include "beam/io/CsvImporter.hpp"
 #include "beam/io/ImageExporter.hpp"
 #include "beam/io/ImageImporter.hpp"
@@ -35,11 +38,17 @@
 #include <QMimeData>
 #include <QMouseEvent>
 #include <QPushButton>
+#include <QFile>
+#include <QInputDialog>
+#include <QIODevice>
+#include <QLineEdit>
 #include <QScrollArea>
+#include <QTextStream>
 #include <QSettings>
 #include <QSignalBlocker>
 #include <QSizePolicy>
 #include <QSlider>
+#include <QSpinBox>
 #include <QSplitter>
 #include <QStatusBar>
 #include <QStyle>
@@ -49,6 +58,8 @@
 #include <QUrl>
 #include <QVBoxLayout>
 #include <QWidget>
+#include <QByteArray>
+#include <QDataStream>
 
 #include <algorithm>
 #include <cmath>
@@ -143,8 +154,6 @@ MainWindow::~MainWindow() {
 
 void MainWindow::captureDemoShots(const QString& outDir) {
   QDir().mkpath(outDir);
-  // Prefer the 64×64 elliptical Gaussian sample when present (matches typical
-  // offline-file demos); otherwise fall back to the simulated camera frame.
   const QString sampleCsv =
       QCoreApplication::applicationDirPath() + QStringLiteral("/samples/data/gaussian_ellipse.csv");
   if (QFileInfo::exists(sampleCsv)) {
@@ -160,19 +169,55 @@ void MainWindow::captureDemoShots(const QString& outDir) {
     loadSimulatedFrame();
   }
   onAutoAoi();
-  // Allow paint/layout to settle.
   QApplication::processEvents();
   QApplication::processEvents();
 
-  const QString mainPath = outDir + QStringLiteral("/cinogy-ui-main.png");
-  if (!grab().save(mainPath, "PNG")) {
-    statusLabel_->setText(QStringLiteral("截图失败: main"));
-  }
-  // Alias used by AOI/profile fix verification.
+  // BeamGage-pass verification shots (plus legacy aliases).
+  grab().save(outDir + QStringLiteral("/beamgage-pass-main.png"), "PNG");
+  grab().save(outDir + QStringLiteral("/cinogy-ui-main.png"), "PNG");
   grab().save(outDir + QStringLiteral("/aoi-profile-fix.png"), "PNG");
 
+  if (metricsDock_) {
+    metricsDock_->raise();
+    metricsDock_->show();
+  }
+  QApplication::processEvents();
+  if (metricsPanel_) {
+    metricsPanel_->grab().save(outDir + QStringLiteral("/beamgage-pass-results.png"), "PNG");
+  } else {
+    grab().save(outDir + QStringLiteral("/beamgage-pass-results.png"), "PNG");
+  }
+
+  // Build a tiny report package and capture the results dock again as "report" view.
+  const QString reportDir = outDir + QStringLiteral("/_report_preview");
+  QDir().mkpath(reportDir);
+  if (ensureMetrics()) {
+    beam::io::FrameAnalysisReport rep;
+    rep.meta.sourcePath = sourcePath_.toStdString();
+    rep.meta.note = "Beam Analyzer conceptual report";
+    rep.meta.sampleName = sampleName_.toStdString();
+    rep.iso = *metrics_;
+    if (power_) {
+      rep.power = *power_;
+    }
+    rep.calibration = currentCalibration();
+    if (widths_) {
+      rep.widths = *widths_;
+    }
+    if (rawFrame_) {
+      rep.pixelSizeX_um = rawFrame_->pixelSizeX_um;
+      rep.pixelSizeY_um = rawFrame_->pixelSizeY_um;
+      rep.frameWidth = rawFrame_->width;
+      rep.frameHeight = rawFrame_->height;
+    }
+    (void)beam::io::exportFrameAnalysisPackage(
+        (reportDir + QStringLiteral("/demo")).toStdString(), rep);
+  }
+  statusLabel_->setText(QStringLiteral("报告包预览已写入（概念实现 / 非正式计量证书）"));
+  QApplication::processEvents();
+  grab().save(outDir + QStringLiteral("/beamgage-pass-report.png"), "PNG");
+
   if (surface3d_) {
-    // Emulate a slight rotation so the mountain reads clearly.
     QMouseEvent press(QEvent::MouseButtonPress, QPointF(80, 80), QPointF(80, 80),
                       Qt::LeftButton, Qt::LeftButton, Qt::NoModifier);
     QMouseEvent move(QEvent::MouseMove, QPointF(140, 100), QPointF(140, 100),
@@ -190,7 +235,7 @@ void MainWindow::captureDemoShots(const QString& outDir) {
   QApplication::processEvents();
   if (analysisDialog_) {
     if (auto* tabs = analysisDialog_->findChild<QTabWidget*>()) {
-      tabs->setCurrentIndex(1);  // 二维/三维能量
+      tabs->setCurrentIndex(1);
     }
     analysisDialog_->resize(1100, 720);
     QApplication::processEvents();
@@ -217,6 +262,8 @@ void MainWindow::rebuildUi() {
   exportJsonAction_->setEnabled(false);
   exportCsvAction_->setEnabled(false);
   exportImageAction_->setEnabled(false);
+  fileMenu->addAction(QStringLiteral("导出分析报告包…"), this, &MainWindow::exportReportPackage);
+  fileMenu->addAction(QStringLiteral("导出帧历史…"), this, &MainWindow::exportFrameHistory);
   fileMenu->addSeparator();
   auto* quitAct = fileMenu->addAction(QStringLiteral("退出"));
   quitAct->setShortcut(QKeySequence::Quit);
@@ -225,6 +272,16 @@ void MainWindow::rebuildUi() {
   auto* viewMenu = menuBar()->addMenu(QStringLiteral("视图(&V)"));
   themeAction_ = viewMenu->addAction(QStringLiteral("切换浅色/深色主题"));
   connect(themeAction_, &QAction::triggered, this, &MainWindow::toggleTheme);
+  viewMenu->addSeparator();
+  viewMenu->addAction(QStringLiteral("保存布局预设…"), this, &MainWindow::saveLayoutPreset);
+  viewMenu->addAction(QStringLiteral("恢复布局预设…"), this, &MainWindow::restoreLayoutPreset);
+  viewMenu->addAction(QStringLiteral("重置默认布局"), this, &MainWindow::resetDefaultLayout);
+
+  auto* calMenu = menuBar()->addMenu(QStringLiteral("标定(&C)"));
+  calMenu->addAction(QStringLiteral("像素尺寸与功率向导…"), this,
+                     &MainWindow::openCalibrationWizard);
+  calMenu->addAction(QStringLiteral("采集暗场/背景帧"), this, &MainWindow::captureDarkFrame);
+  calMenu->addAction(QStringLiteral("清除暗场"), this, &MainWindow::clearDarkFrame);
 
   auto* tool = addToolBar(QStringLiteral("主工具栏"));
   tool->setObjectName(QStringLiteral("MainToolBar"));
@@ -314,19 +371,28 @@ void MainWindow::rebuildUi() {
   stripLay->addWidget(statusStripHint_);
   centralOuter->addWidget(statusStrip);
 
+  disclaimerBanner_ = new QLabel(
+      QStringLiteral("概念实现 / 非正式计量证书 — 工程预览用途，不构成 ISO 或厂商认证结果"));
+  disclaimerBanner_->setObjectName(QStringLiteral("DisclaimerBanner"));
+  disclaimerBanner_->setAlignment(Qt::AlignCenter);
+  disclaimerBanner_->setStyleSheet(
+      QStringLiteral("background:#3b2f1a;color:#fbbf24;font-size:11px;font-weight:600;"
+                     "padding:3px 8px;"));
+  centralOuter->addWidget(disclaimerBanner_);
+
   auto* centralLayout = new QHBoxLayout;
   centralLayout->setContentsMargins(0, 0, 0, 0);
   centralLayout->setSpacing(0);
 
-  auto* mainSplit = new QSplitter(Qt::Horizontal, centralHost);
-  mainSplit->setObjectName(QStringLiteral("MainSplitter"));
-  mainSplit->setChildrenCollapsible(false);
-  mainSplit->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
+  mainSplit_ = new QSplitter(Qt::Horizontal, centralHost);
+  mainSplit_->setObjectName(QStringLiteral("MainSplitter"));
+  mainSplit_->setChildrenCollapsible(false);
+  mainSplit_->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
 
-  auto* leftSplit = new QSplitter(Qt::Vertical);
-  leftSplit->setObjectName(QStringLiteral("LeftSplitter"));
-  leftSplit->setChildrenCollapsible(false);
-  leftSplit->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
+  leftSplit_ = new QSplitter(Qt::Vertical);
+  leftSplit_->setObjectName(QStringLiteral("LeftSplitter"));
+  leftSplit_->setChildrenCollapsible(false);
+  leftSplit_->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
 
   auto* imageChrome = new QWidget;
   imageChrome->setObjectName(QStringLiteral("ImageChrome"));
@@ -341,7 +407,7 @@ void MainWindow::rebuildUi() {
   colorLegendLabel_->setObjectName(QStringLiteral("ColorLegend"));
   colorLegendLabel_->setToolTip(QStringLiteral("显示色标（显示层；对数仅影响假彩映射）"));
   chromeLay->addWidget(colorLegendLabel_);
-  leftSplit->addWidget(imageChrome);
+  leftSplit_->addWidget(imageChrome);
 
   imageView_ = new ImageView;
   connect(imageView_, &ImageView::aoiChanged, this, &MainWindow::onAoiChanged);
@@ -349,9 +415,9 @@ void MainWindow::rebuildUi() {
   connect(imageView_, &ImageView::crosshairChanged, this, &MainWindow::onCrosshairChanged);
   imageView_->clearFrame();
 
-  auto* viewSplit = new QSplitter(Qt::Horizontal);
-  viewSplit->setObjectName(QStringLiteral("ViewSplit2D3D"));
-  viewSplit->setChildrenCollapsible(false);
+  viewSplit_ = new QSplitter(Qt::Horizontal);
+  viewSplit_->setObjectName(QStringLiteral("ViewSplit2D3D"));
+  viewSplit_->setChildrenCollapsible(false);
   auto* scroll = new QScrollArea;
   scroll->setWidgetResizable(true);
   scroll->setFrameShape(QFrame::NoFrame);
@@ -360,12 +426,12 @@ void MainWindow::rebuildUi() {
   scroll->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
   scroll->setWidget(imageView_);
   surface3d_ = new IntensitySurface3D;
-  viewSplit->addWidget(scroll);
-  viewSplit->addWidget(surface3d_);
-  viewSplit->setStretchFactor(0, 3);
-  viewSplit->setStretchFactor(1, 2);
-  viewSplit->setSizes({640, 420});
-  leftSplit->addWidget(viewSplit);
+  viewSplit_->addWidget(scroll);
+  viewSplit_->addWidget(surface3d_);
+  viewSplit_->setStretchFactor(0, 3);
+  viewSplit_->setStretchFactor(1, 2);
+  viewSplit_->setSizes({640, 420});
+  leftSplit_->addWidget(viewSplit_);
 
   auto* scrubRow = new QWidget;
   scrubRow->setObjectName(QStringLiteral("PlayerBar"));
@@ -402,7 +468,7 @@ void MainWindow::rebuildUi() {
   scrubLayout->addWidget(frameScrubber_, 1);
   frameScrubLabel_ = new QLabel(QStringLiteral("0 / 0"));
   scrubLayout->addWidget(frameScrubLabel_);
-  leftSplit->addWidget(scrubRow);
+  leftSplit_->addWidget(scrubRow);
 
   playTimer_ = new QTimer(this);
   playTimer_->setInterval(120);
@@ -434,12 +500,12 @@ void MainWindow::rebuildUi() {
   profilesLayout->addWidget(hProfilePlot_, 1);
   profilesLayout->addWidget(vProfilePlot_, 1);
   profilesOuter->addWidget(profilesRow, 1);
-  leftSplit->addWidget(profiles);
-  leftSplit->setStretchFactor(0, 0);
-  leftSplit->setStretchFactor(1, 5);
-  leftSplit->setStretchFactor(2, 0);
-  leftSplit->setStretchFactor(3, 1);
-  mainSplit->addWidget(leftSplit);
+  leftSplit_->addWidget(profiles);
+  leftSplit_->setStretchFactor(0, 0);
+  leftSplit_->setStretchFactor(1, 5);
+  leftSplit_->setStretchFactor(2, 0);
+  leftSplit_->setStretchFactor(3, 1);
+  mainSplit_->addWidget(leftSplit_);
 
   auto* right = new QWidget;
   right->setObjectName(QStringLiteral("ControlColumn"));
@@ -483,6 +549,23 @@ void MainWindow::rebuildUi() {
   livePreviewCheck_ = new QCheckBox(QStringLiteral("实时预览"));
   connect(livePreviewCheck_, &QCheckBox::toggled, this, &MainWindow::onLivePreviewToggled);
   camForm->addRow(livePreviewCheck_);
+
+  captureModeBox_ = new QComboBox;
+  captureModeBox_->addItem(QStringLiteral("连续"),
+                           static_cast<int>(beam::core::CaptureMode::Continuous));
+  captureModeBox_->addItem(QStringLiteral("单帧"),
+                           static_cast<int>(beam::core::CaptureMode::Single));
+  captureModeBox_->addItem(QStringLiteral("平均 N 帧"),
+                           static_cast<int>(beam::core::CaptureMode::AverageN));
+  connect(captureModeBox_, QOverload<int>::of(&QComboBox::currentIndexChanged), this,
+          &MainWindow::onCaptureModeChanged);
+  camForm->addRow(QStringLiteral("采集模式"), captureModeBox_);
+
+  averageNSpin_ = new QSpinBox;
+  averageNSpin_->setRange(2, 64);
+  averageNSpin_->setValue(8);
+  averageNSpin_->setToolTip(QStringLiteral("平均帧数（仅「平均 N 帧」模式）"));
+  camForm->addRow(QStringLiteral("平均帧数 N"), averageNSpin_);
 
   camExposureSpin_ = new QDoubleSpinBox;
   camExposureSpin_->setRange(1.0, 1e7);
@@ -551,6 +634,26 @@ void MainWindow::rebuildUi() {
           &MainWindow::onBackgroundModeChanged);
   toolsForm->addRow(QStringLiteral("背景"), backgroundBox_);
 
+  applyDarkCheck_ = new QCheckBox(QStringLiteral("应用暗场帧"));
+  applyDarkCheck_->setEnabled(false);
+  connect(applyDarkCheck_, &QCheckBox::toggled, this, &MainWindow::applyDarkToggled);
+  toolsForm->addRow(applyDarkCheck_);
+  darkStatusLabel_ = new QLabel(QStringLiteral("暗场: 无"));
+  darkStatusLabel_->setStyleSheet(QStringLiteral("color:#8892a4;font-size:11px;"));
+  toolsForm->addRow(darkStatusLabel_);
+  auto* darkBtnRow = new QHBoxLayout;
+  auto* captureDarkBtn = new QPushButton(QStringLiteral("采暗场"));
+  auto* clearDarkBtn = new QPushButton(QStringLiteral("清暗场"));
+  connect(captureDarkBtn, &QPushButton::clicked, this, &MainWindow::captureDarkFrame);
+  connect(clearDarkBtn, &QPushButton::clicked, this, &MainWindow::clearDarkFrame);
+  darkBtnRow->addWidget(captureDarkBtn);
+  darkBtnRow->addWidget(clearDarkBtn);
+  toolsForm->addRow(darkBtnRow);
+
+  auto* calWizardBtn = new QPushButton(QStringLiteral("标定向导…"));
+  connect(calWizardBtn, &QPushButton::clicked, this, &MainWindow::openCalibrationWizard);
+  toolsForm->addRow(calWizardBtn);
+
   bgConstantSpin_ = new QDoubleSpinBox;
   bgConstantSpin_->setRange(-1e9, 1e9);
   bgConstantSpin_->setDecimals(4);
@@ -598,7 +701,8 @@ void MainWindow::rebuildUi() {
 
   auto* hint = new QLabel(
       QStringLiteral("提示：拖放 PNG/BMP/TIFF/JPEG/CSV 到窗口即可打开。"
-                     "实时预览时指标会动态刷新；暂停后可用帧历史滑条回看。"));
+                     "实时预览时指标会动态刷新；暂停后可用帧历史滑条回看。"
+                     "本软件为概念实现，非正式计量证书。"));
   hint->setWordWrap(true);
   hint->setStyleSheet(QStringLiteral("color: #8892a4; font-size: 11px;"));
   rightLayout->addWidget(hint);
@@ -606,28 +710,28 @@ void MainWindow::rebuildUi() {
   rightScroll->setWidget(rightInner);
   rightOuter->addWidget(rightScroll, 1);
 
-  mainSplit->addWidget(right);
-  // Image/profile column takes all extra width; control column stays near preferred size.
-  mainSplit->setStretchFactor(0, 1);
-  mainSplit->setStretchFactor(1, 0);
-  mainSplit->setSizes({1000, 320});
-  centralLayout->addWidget(mainSplit, /*stretch=*/1);
+  mainSplit_->addWidget(right);
+  mainSplit_->setStretchFactor(0, 1);
+  mainSplit_->setStretchFactor(1, 0);
+  mainSplit_->setSizes({1000, 320});
+  centralLayout->addWidget(mainSplit_, /*stretch=*/1);
   centralOuter->addLayout(centralLayout, 1);
   setCentralWidget(centralHost);
 
   metricsPanel_ = new MetricsPanel;
   metricsPanel_->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Expanding);
   metricsPanel_->setMinimumWidth(240);
-  metricsDock_ = new QDockWidget(QStringLiteral("测量指标"), this);
+  metricsDock_ = new QDockWidget(QStringLiteral("结果表（可勾选）"), this);
   metricsDock_->setObjectName(QStringLiteral("MetricsDock"));
   metricsDock_->setWidget(metricsPanel_);
   metricsDock_->setAllowedAreas(Qt::LeftDockWidgetArea | Qt::RightDockWidgetArea);
   metricsDock_->setFeatures(QDockWidget::DockWidgetMovable | QDockWidget::DockWidgetFloatable |
                             QDockWidget::DockWidgetClosable);
-  metricsDock_->setMinimumWidth(260);
+  metricsDock_->setMinimumWidth(280);
   addDockWidget(Qt::RightDockWidgetArea, metricsDock_);
-  resizeDocks({metricsDock_}, {300}, Qt::Horizontal);
+  resizeDocks({metricsDock_}, {320}, Qt::Horizontal);
   viewMenu->addAction(metricsDock_->toggleViewAction());
+  connect(metricsPanel_, &MetricsPanel::selectionChanged, this, &MainWindow::refreshMetricsPanel);
 
   statusModeChip_ = new QLabel(QStringLiteral("离线"));
   statusModeChip_->setObjectName(QStringLiteral("StatusModeChip"));
@@ -983,6 +1087,10 @@ void MainWindow::onLiveTick() {
   if (!activeCamera_ || !activeCamera_->isAcquiring()) {
     return;
   }
+  if (captureMode_ == beam::core::CaptureMode::Single) {
+    // Single-shot: only software-trigger / SoftTrigger button publishes frames.
+    return;
+  }
   const auto mode = static_cast<beam::camera::TriggerMode>(
       triggerModeBox_->currentData().toInt());
   if (mode == beam::camera::TriggerMode::Software ||
@@ -993,8 +1101,22 @@ void MainWindow::onLiveTick() {
   if (!cap.ok) {
     return;
   }
-  applyFrame(cap.frame, QStringLiteral("<live:%1>")
-                            .arg(QString::fromStdString(activeCamera_->info().id)));
+  const QString label = QStringLiteral("<live:%1>")
+                            .arg(QString::fromStdString(activeCamera_->info().id));
+  if (captureMode_ == beam::core::CaptureMode::AverageN) {
+    averageAccum_.push_back(cap.frame);
+    const int n = averageNSpin_ ? averageNSpin_->value() : 8;
+    if (static_cast<int>(averageAccum_.size()) >= n) {
+      auto avg = beam::core::FrameBuffer::averageFrames(averageAccum_);
+      averageAccum_.clear();
+      applyFrame(std::move(avg), label + QStringLiteral(" avg%1").arg(n));
+    } else if (statusLabel_) {
+      statusLabel_->setText(
+          QStringLiteral("平均采集中 %1 / %2").arg(averageAccum_.size()).arg(n));
+    }
+    return;
+  }
+  applyFrame(cap.frame, label);
 }
 
 void MainWindow::seekHistory(int index) {
@@ -1140,6 +1262,9 @@ void MainWindow::loadSimulatedFrame() {
 
 void MainWindow::applyFrame(beam::core::BeamFrame frame, const QString& sourceLabel,
                             bool pushHistory) {
+  if (applyDark_ && darkBuffer_.hasDarkFrame()) {
+    frame = darkBuffer_.applyDark(frame);
+  }
   rawFrame_ = std::move(frame);
   sourcePath_ = sourceLabel;
   if (crossX_ < 0 || crossY_ < 0 ||
@@ -1184,6 +1309,11 @@ void MainWindow::refreshAnalysis() {
   metrics_ = beam::core::computeIso11146(*analysisFrame_);
   iso13694_ = beam::core::computeIso13694(*analysisFrame_, 0.5);
   power_ = beam::core::computePowerMetrics(*analysisFrame_, currentCalibration());
+  if (metrics_ && metrics_->valid) {
+    widths_ = beam::core::computeBeamWidthSuite(*analysisFrame_, &(*metrics_));
+  } else {
+    widths_.reset();
+  }
   if (metrics_ && metrics_->valid && analysisDialog_ && analysisDialog_->isVisible()) {
     analysisDialog_->setFrame(*rawFrame_, *metrics_, power_, aoi_, wavelengthSpin_->value());
     analysisDialog_->pushStabilitySample(stabilityT_, metrics_->centroidX_um,
@@ -1280,7 +1410,7 @@ void MainWindow::refreshMetricsPanel() {
   if (aoi_) {
     roiBounds = aoi_->bounds;
   }
-  metricsPanel_->updateMetrics(*metrics_, power_, rawFrame_ ? &(*rawFrame_) : nullptr,
+  metricsPanel_->updateMetrics(*metrics_, power_, widths_, rawFrame_ ? &(*rawFrame_) : nullptr,
                                roiBounds, useRoiCheck_->isChecked(), crossX_, crossY_,
                                camCopy ? &(*camCopy) : nullptr);
 }
@@ -1708,9 +1838,20 @@ void MainWindow::saveSettings() {
   s.setValue(QStringLiteral("theme"), static_cast<int>(theme_));
   s.setValue(QStringLiteral("autoAoiScale"),
              autoAoiScaleSpin_ ? autoAoiScaleSpin_->value() : 1.5);
+  s.setValue(QStringLiteral("captureMode"),
+             captureModeBox_ ? captureModeBox_->currentIndex() : 0);
+  s.setValue(QStringLiteral("averageN"), averageNSpin_ ? averageNSpin_->value() : 8);
+  s.setValue(QStringLiteral("sampleName"), sampleName_);
+  s.setValue(QStringLiteral("operatorName"), operatorName_);
+  s.setValue(QStringLiteral("deviceId"), deviceId_);
+  s.setValue(QStringLiteral("calibrationId"), calibrationId_);
+  if (metricsPanel_) {
+    s.setValue(QStringLiteral("metricsKeys"), metricsPanel_->enabledKeys());
+  }
   s.setValue(QStringLiteral("recentFiles"), recentFiles_);
   s.setValue(QStringLiteral("geometry"), saveGeometry());
   s.setValue(QStringLiteral("windowState"), saveState());
+  persistSplitterState();
 }
 
 void MainWindow::loadSettings() {
@@ -1730,16 +1871,32 @@ void MainWindow::loadSettings() {
   camGainSpin_->setValue(s.value(QStringLiteral("camGain_db"), 0.0).toDouble());
   camFpsSpin_->setValue(s.value(QStringLiteral("camFps"), 15.0).toDouble());
   triggerModeBox_->setCurrentIndex(s.value(QStringLiteral("triggerMode"), 0).toInt());
+  if (captureModeBox_) {
+    captureModeBox_->setCurrentIndex(s.value(QStringLiteral("captureMode"), 0).toInt());
+  }
+  if (averageNSpin_) {
+    averageNSpin_->setValue(s.value(QStringLiteral("averageN"), 8).toInt());
+  }
   theme_ = static_cast<AppTheme>(
       s.value(QStringLiteral("theme"), static_cast<int>(AppTheme::Dark)).toInt());
   if (autoAoiScaleSpin_) {
     autoAoiScaleSpin_->setValue(s.value(QStringLiteral("autoAoiScale"), 1.5).toDouble());
   }
+  sampleName_ = s.value(QStringLiteral("sampleName")).toString();
+  operatorName_ = s.value(QStringLiteral("operatorName")).toString();
+  deviceId_ = s.value(QStringLiteral("deviceId")).toString();
+  calibrationId_ = s.value(QStringLiteral("calibrationId")).toString();
+  if (metricsPanel_) {
+    const QStringList keys = s.value(QStringLiteral("metricsKeys")).toStringList();
+    if (!keys.isEmpty()) {
+      metricsPanel_->setEnabledKeys(keys);
+    }
+  }
   recentFiles_ = s.value(QStringLiteral("recentFiles")).toStringList();
   rebuildRecentMenu();
   restoreGeometry(s.value(QStringLiteral("geometry")).toByteArray());
   restoreState(s.value(QStringLiteral("windowState")).toByteArray());
-  // Clamp a corrupted/legacy dock width so maximize never leaves an empty gutter.
+  restoreSplitterState();
   if (metricsDock_ && !metricsDock_->isFloating() && metricsDock_->isVisible()) {
     const int w = metricsDock_->width();
     if (w < 200 || w > 640) {
@@ -1748,4 +1905,287 @@ void MainWindow::loadSettings() {
   }
 }
 
+void MainWindow::persistSplitterState() {
+  QSettings s(QStringLiteral("BeamAnalyzer"), QStringLiteral("BeamAnalyzer"));
+  if (mainSplit_) {
+    s.setValue(QStringLiteral("split/main"), mainSplit_->saveState());
+  }
+  if (leftSplit_) {
+    s.setValue(QStringLiteral("split/left"), leftSplit_->saveState());
+  }
+  if (viewSplit_) {
+    s.setValue(QStringLiteral("split/view"), viewSplit_->saveState());
+  }
+}
+
+void MainWindow::restoreSplitterState() {
+  QSettings s(QStringLiteral("BeamAnalyzer"), QStringLiteral("BeamAnalyzer"));
+  if (mainSplit_) {
+    mainSplit_->restoreState(s.value(QStringLiteral("split/main")).toByteArray());
+  }
+  if (leftSplit_) {
+    leftSplit_->restoreState(s.value(QStringLiteral("split/left")).toByteArray());
+  }
+  if (viewSplit_) {
+    viewSplit_->restoreState(s.value(QStringLiteral("split/view")).toByteArray());
+  }
+}
+
+QByteArray MainWindow::captureLayoutBlob() const {
+  QByteArray blob;
+  QDataStream ds(&blob, QIODevice::WriteOnly);
+  ds << saveGeometry() << saveState();
+  ds << (mainSplit_ ? mainSplit_->saveState() : QByteArray());
+  ds << (leftSplit_ ? leftSplit_->saveState() : QByteArray());
+  ds << (viewSplit_ ? viewSplit_->saveState() : QByteArray());
+  return blob;
+}
+
+void MainWindow::applyLayoutBlob(const QByteArray& blob) {
+  QDataStream ds(blob);
+  QByteArray geo;
+  QByteArray win;
+  QByteArray mainSt;
+  QByteArray leftSt;
+  QByteArray viewSt;
+  ds >> geo >> win >> mainSt >> leftSt >> viewSt;
+  restoreGeometry(geo);
+  restoreState(win);
+  if (mainSplit_) {
+    mainSplit_->restoreState(mainSt);
+  }
+  if (leftSplit_) {
+    leftSplit_->restoreState(leftSt);
+  }
+  if (viewSplit_) {
+    viewSplit_->restoreState(viewSt);
+  }
+}
+
+void MainWindow::saveLayoutPreset() {
+  bool ok = false;
+  const QString name = QInputDialog::getText(
+      this, QStringLiteral("保存布局预设"), QStringLiteral("预设名称:"),
+      QLineEdit::Normal, QStringLiteral("工作站"), &ok);
+  if (!ok || name.trimmed().isEmpty()) {
+    return;
+  }
+  QSettings s(QStringLiteral("BeamAnalyzer"), QStringLiteral("BeamAnalyzer"));
+  s.beginGroup(QStringLiteral("layoutPresets"));
+  s.setValue(name.trimmed(), captureLayoutBlob());
+  s.endGroup();
+  statusLabel_->setText(QStringLiteral("已保存布局预设: %1").arg(name.trimmed()));
+}
+
+void MainWindow::restoreLayoutPreset() {
+  QSettings s(QStringLiteral("BeamAnalyzer"), QStringLiteral("BeamAnalyzer"));
+  s.beginGroup(QStringLiteral("layoutPresets"));
+  const QStringList names = s.childKeys();
+  s.endGroup();
+  if (names.isEmpty()) {
+    QMessageBox::information(this, QStringLiteral("恢复布局"),
+                             QStringLiteral("尚无已保存的布局预设。"));
+    return;
+  }
+  bool ok = false;
+  const QString name = QInputDialog::getItem(this, QStringLiteral("恢复布局预设"),
+                                             QStringLiteral("选择预设:"), names, 0, false, &ok);
+  if (!ok || name.isEmpty()) {
+    return;
+  }
+  s.beginGroup(QStringLiteral("layoutPresets"));
+  applyLayoutBlob(s.value(name).toByteArray());
+  s.endGroup();
+  statusLabel_->setText(QStringLiteral("已恢复布局预设: %1").arg(name));
+}
+
+void MainWindow::resetDefaultLayout() {
+  if (mainSplit_) {
+    mainSplit_->setSizes({1000, 320});
+  }
+  if (viewSplit_) {
+    viewSplit_->setSizes({640, 420});
+  }
+  if (leftSplit_) {
+    leftSplit_->setSizes({28, 520, 36, 180});
+  }
+  if (metricsDock_) {
+    metricsDock_->show();
+    addDockWidget(Qt::RightDockWidgetArea, metricsDock_);
+    resizeDocks({metricsDock_}, {320}, Qt::Horizontal);
+  }
+  statusLabel_->setText(QStringLiteral("已重置默认多面板布局"));
+}
+
+void MainWindow::openCalibrationWizard() {
+  CalibrationWizard dlg(this);
+  CalibrationResult seed;
+  seed.pixelSizeX_um = rawFrame_ ? rawFrame_->pixelSizeX_um : 5.0;
+  seed.pixelSizeY_um = rawFrame_ ? rawFrame_->pixelSizeY_um : 5.0;
+  seed.countsToWatts = countsToWattsSpin_->value();
+  seed.exposure_s = exposureSpin_->value();
+  seed.wavelength_nm = wavelengthSpin_->value();
+  seed.sampleName = sampleName_;
+  seed.operatorName = operatorName_;
+  seed.deviceId = deviceId_;
+  seed.calibrationId = calibrationId_;
+  dlg.setInitial(seed);
+  if (dlg.exec() != QDialog::Accepted) {
+    return;
+  }
+  const auto r = dlg.result();
+  countsToWattsSpin_->setValue(r.countsToWatts);
+  exposureSpin_->setValue(r.exposure_s);
+  wavelengthSpin_->setValue(r.wavelength_nm);
+  sampleName_ = r.sampleName;
+  operatorName_ = r.operatorName;
+  deviceId_ = r.deviceId;
+  calibrationId_ = r.calibrationId;
+  if (rawFrame_) {
+    rawFrame_->pixelSizeX_um = r.pixelSizeX_um;
+    rawFrame_->pixelSizeY_um = r.pixelSizeY_um;
+    refreshAnalysis();
+  }
+  statusLabel_->setText(QStringLiteral("标定参数已应用（概念实现，非正式计量证书）"));
+}
+
+void MainWindow::captureDarkFrame() {
+  if (!rawFrame_) {
+    QMessageBox::information(this, QStringLiteral("暗场"),
+                             QStringLiteral("请先加载或采集一帧（遮挡光束后的背景帧）。"));
+    return;
+  }
+  darkBuffer_.setDarkFrame(*rawFrame_);
+  applyDarkCheck_->setEnabled(true);
+  applyDarkCheck_->setChecked(true);
+  applyDark_ = true;
+  darkStatusLabel_->setText(
+      QStringLiteral("暗场: %1×%2 已采集").arg(rawFrame_->width).arg(rawFrame_->height));
+  statusLabel_->setText(QStringLiteral("已采集暗场/背景帧；后续帧将自动减去暗场"));
+  refreshAnalysis();
+}
+
+void MainWindow::clearDarkFrame() {
+  darkBuffer_.clearDarkFrame();
+  applyDark_ = false;
+  if (applyDarkCheck_) {
+    applyDarkCheck_->setChecked(false);
+    applyDarkCheck_->setEnabled(false);
+  }
+  if (darkStatusLabel_) {
+    darkStatusLabel_->setText(QStringLiteral("暗场: 无"));
+  }
+  statusLabel_->setText(QStringLiteral("已清除暗场"));
+  refreshAnalysis();
+}
+
+void MainWindow::applyDarkToggled(bool on) {
+  applyDark_ = on && darkBuffer_.hasDarkFrame();
+  refreshAnalysis();
+}
+
+void MainWindow::onCaptureModeChanged(int index) {
+  if (!captureModeBox_) {
+    return;
+  }
+  captureMode_ =
+      static_cast<beam::core::CaptureMode>(captureModeBox_->itemData(index).toInt());
+  averageAccum_.clear();
+  if (averageNSpin_) {
+    averageNSpin_->setEnabled(captureMode_ == beam::core::CaptureMode::AverageN);
+  }
+}
+
+void MainWindow::exportReportPackage() {
+  if (!ensureMetrics()) {
+    QMessageBox::information(this, QStringLiteral("报告"),
+                             QStringLiteral("请先加载有效分析帧。"));
+    return;
+  }
+  const QString path = QFileDialog::getSaveFileName(
+      this, QStringLiteral("导出分析报告包前缀"), QStringLiteral("beam_report"),
+      QStringLiteral("Prefix (*)"));
+  if (path.isEmpty()) {
+    return;
+  }
+  QString imageRel;
+  const QString imgPath = path + QStringLiteral("_annotated.png");
+  {
+    double mn = 0;
+    double mx = 0;
+    QImage img = frameToImage(*rawFrame_, colorMap_, &mn, &mx, intensityScale_);
+    img.save(imgPath, "PNG");
+    imageRel = QFileInfo(imgPath).fileName();
+  }
+
+  beam::io::FrameAnalysisReport rep;
+  rep.meta.sourcePath = sourcePath_.toStdString();
+  rep.meta.note = "Beam Analyzer conceptual report — not a metrology certificate";
+  rep.meta.sampleName = sampleName_.toStdString();
+  rep.meta.operatorName = operatorName_.toStdString();
+  rep.meta.deviceId = deviceId_.toStdString();
+  rep.meta.calibrationId = calibrationId_.toStdString();
+  rep.iso = *metrics_;
+  if (power_) {
+    rep.power = *power_;
+  }
+  rep.calibration = currentCalibration();
+  if (widths_) {
+    rep.widths = *widths_;
+  }
+  if (rawFrame_) {
+    rep.pixelSizeX_um = rawFrame_->pixelSizeX_um;
+    rep.pixelSizeY_um = rawFrame_->pixelSizeY_um;
+    rep.frameWidth = rawFrame_->width;
+    rep.frameHeight = rawFrame_->height;
+  }
+  rep.annotatedImageRelPath = imageRel.toStdString();
+
+  if (!beam::io::exportFrameAnalysisPackage(path.toStdString(), rep)) {
+    QMessageBox::warning(this, QStringLiteral("报告"), QStringLiteral("写入报告包失败。"));
+    return;
+  }
+  statusLabel_->setText(
+      QStringLiteral("已导出报告包（HTML/MD/JSON）: %1_* — 概念实现 / 非正式计量证书")
+          .arg(path));
+}
+
+void MainWindow::exportFrameHistory() {
+  if (frameHistory_.empty()) {
+    QMessageBox::information(this, QStringLiteral("帧历史"),
+                             QStringLiteral("帧缓冲为空。"));
+    return;
+  }
+  const QString dir = QFileDialog::getExistingDirectory(this, QStringLiteral("导出帧历史目录"));
+  if (dir.isEmpty()) {
+    return;
+  }
+  int written = 0;
+  for (std::size_t i = 0; i < frameHistory_.size(); ++i) {
+    const auto& fr = frameHistory_[i];
+    double mn = 0;
+    double mx = 0;
+    QImage img = frameToImage(fr, colorMap_, &mn, &mx, intensityScale_);
+    const QString name =
+        QStringLiteral("%1/frame_%2.png").arg(dir).arg(i, 4, 10, QChar('0'));
+    if (img.save(name, "PNG")) {
+      ++written;
+    }
+  }
+  // Also dump a small CSV index.
+  {
+    QFile f(dir + QStringLiteral("/history_index.csv"));
+    if (f.open(QIODevice::WriteOnly | QIODevice::Text)) {
+      QTextStream ts(&f);
+      ts << "index,label,width,height\n";
+      for (std::size_t i = 0; i < frameHistory_.size(); ++i) {
+        ts << i << "," << frameHistoryLabels_[i] << "," << frameHistory_[i].width << ","
+           << frameHistory_[i].height << "\n";
+      }
+    }
+  }
+  statusLabel_->setText(QStringLiteral("已导出 %1 帧到 %2").arg(written).arg(dir));
+}
+
 }  // namespace beam::ui
+

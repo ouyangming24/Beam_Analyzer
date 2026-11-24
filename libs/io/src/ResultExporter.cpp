@@ -413,4 +413,200 @@ bool exportM2ReportHtml(const std::string& path,
   return static_cast<bool>(out);
 }
 
+namespace {
+
+std::string escHtml(const std::string& s) {
+  std::string o;
+  o.reserve(s.size());
+  for (char c : s) {
+    switch (c) {
+      case '&':
+        o += "&amp;";
+        break;
+      case '<':
+        o += "&lt;";
+        break;
+      case '>':
+        o += "&gt;";
+        break;
+      case '"':
+        o += "&quot;";
+        break;
+      default:
+        o += c;
+        break;
+    }
+  }
+  return o;
+}
+
+std::string fmtNum(double v, int prec = 4) {
+  if (!std::isfinite(v)) {
+    return "—";
+  }
+  std::ostringstream ss;
+  ss << std::setprecision(prec) << v;
+  return ss.str();
+}
+
+}  // namespace
+
+bool exportFrameAnalysisMarkdown(const std::string& path, const FrameAnalysisReport& report) {
+  std::ofstream out(path);
+  if (!out) {
+    return false;
+  }
+  out << std::setprecision(6);
+  out << "# Beam Analyzer — 单帧分析报告\n\n";
+  out << "> **概念实现 / 非正式计量证书。** 不声称与任何商业光束分析仪等同，"
+         "也不构成 ISO 认证结果。\n\n";
+  out << "## 元数据\n\n";
+  out << "| 项 | 值 |\n|---|---|\n";
+  out << "| 样品 | " << report.meta.sampleName << " |\n";
+  out << "| 操作员 | " << report.meta.operatorName << " |\n";
+  out << "| 设备 | " << report.meta.deviceId << " |\n";
+  out << "| 标定 ID | " << report.meta.calibrationId << " |\n";
+  out << "| 来源 | " << report.meta.sourcePath << " |\n";
+  out << "| 帧尺寸 | " << report.frameWidth << " × " << report.frameHeight << " |\n";
+  out << "| 像素尺寸 / µm | " << report.pixelSizeX_um << " × " << report.pixelSizeY_um
+      << " |\n";
+  out << "| 备注 | " << report.meta.note << " |\n\n";
+
+  if (!report.annotatedImageRelPath.empty()) {
+    out << "## 强度图\n\n!["
+        << "annotated](" << report.annotatedImageRelPath << ")\n\n";
+  }
+
+  out << "## ISO 11146（二阶矩）\n\n";
+  out << "| 量 | 数值 | 单位 |\n|---|---|---|\n";
+  out << "| 质心 X | " << report.iso.centroidX_um << " | µm |\n";
+  out << "| 质心 Y | " << report.iso.centroidY_um << " | µm |\n";
+  out << "| Dx (4σ) | " << report.iso.diameterX_um << " | µm |\n";
+  out << "| Dy (4σ) | " << report.iso.diameterY_um << " | µm |\n";
+  out << "| D major | " << report.iso.diameterMajor_um << " | µm |\n";
+  out << "| D minor | " << report.iso.diameterMinor_um << " | µm |\n";
+  out << "| 方位角 | " << (report.iso.orientation_rad * kRadToDeg) << " | ° |\n";
+  out << "| 椭圆度 | " << report.iso.ellipticity << " | — |\n\n";
+
+  out << "## 其他宽度工具（概念）\n\n";
+  out << "| 方法 | Wx / µm | Wy / µm | D / µm |\n|---|---|---|---|\n";
+  auto wrow = [&](const char* name, const beam::core::AxisWidthResult& w) {
+    out << "| " << name << " | " << w.widthX_um << " | " << w.widthY_um << " | "
+        << w.diameter_um << " |\n";
+  };
+  wrow("刀口 10/90", report.widths.knife1090);
+  wrow("刀口 16/84", report.widths.knife1684);
+  wrow("% 峰值 (13.5%)", report.widths.percentPeak);
+  wrow("% 能量 (86.5%)", report.widths.percentEnergy);
+  wrow("包围功率 86.5%", report.widths.encircled);
+  out << "\n";
+
+  out << "## 功率 / 能量\n\n";
+  out << "| 量 | 数值 |\n|---|---|\n";
+  out << "| Σ counts | " << report.power.sumCounts << " |\n";
+  out << "| 峰值 counts | " << report.power.peakCounts << " |\n";
+  if (report.power.calibrated) {
+    out << "| 功率 / W | " << report.power.power_W << " |\n";
+    out << "| 能量 / J | " << report.power.energy_J << " |\n";
+  } else {
+    out << "| 功率 | 未标定 |\n";
+  }
+  out << "\n---\nBeam Analyzer · 工程预览报告\n";
+  return static_cast<bool>(out);
+}
+
+bool exportFrameAnalysisHtml(const std::string& path, const FrameAnalysisReport& report) {
+  std::ofstream out(path);
+  if (!out) {
+    return false;
+  }
+  out << "<!DOCTYPE html><html lang=\"zh-CN\"><head><meta charset=\"utf-8\">"
+         "<title>Beam Analyzer Frame Report</title><style>"
+         "body{font:13px/1.55 system-ui,sans-serif;color:#1e293b;max-width:920px;"
+         "margin:24px auto;padding:0 16px}"
+         "h1{font-size:20px}table{border-collapse:collapse;width:100%;margin:10px 0}"
+         "th,td{border:1px solid #cbd5e1;padding:6px 8px;text-align:right}"
+         "th:first-child,td:first-child{text-align:left}th{background:#e2e8f0}"
+         ".notice{background:#fff7ed;border:1px solid #fdba74;padding:10px;margin:12px 0}"
+         "img{max-width:100%;border:1px solid #cbd5e1}"
+         "footer{margin-top:24px;font-size:11px;color:#64748b;border-top:1px solid #94a3b8;"
+         "padding-top:10px}"
+         "</style></head><body>";
+  out << "<h1>Beam Analyzer — 单帧分析报告</h1>";
+  out << "<div class=\"notice\"><strong>概念实现 / 非正式计量证书。</strong>"
+         "不声称与商业光束分析仪等同，也不构成 ISO 认证结果。</div>";
+
+  out << "<h2>元数据</h2><table><tbody>";
+  auto row = [&](const char* k, const std::string& v) {
+    out << "<tr><td>" << k << "</td><td>" << escHtml(v.empty() ? "—" : v) << "</td></tr>";
+  };
+  row("样品", report.meta.sampleName);
+  row("操作员", report.meta.operatorName);
+  row("设备", report.meta.deviceId);
+  row("标定 ID", report.meta.calibrationId);
+  row("来源", report.meta.sourcePath);
+  out << "<tr><td>帧尺寸</td><td>" << report.frameWidth << " × " << report.frameHeight
+      << "</td></tr>";
+  out << "<tr><td>像素尺寸 / µm</td><td>" << fmtNum(report.pixelSizeX_um) << " × "
+      << fmtNum(report.pixelSizeY_um) << "</td></tr>";
+  row("备注", report.meta.note);
+  out << "</tbody></table>";
+
+  if (!report.annotatedImageRelPath.empty()) {
+    out << "<h2>强度图</h2><p><img src=\"" << escHtml(report.annotatedImageRelPath)
+        << "\" alt=\"annotated\"/></p>";
+  }
+
+  out << "<h2>ISO 11146</h2><table><thead><tr><th>量</th><th>数值</th><th>单位</th>"
+         "</tr></thead><tbody>";
+  auto mrow = [&](const char* n, double v, const char* u) {
+    out << "<tr><td>" << n << "</td><td>" << fmtNum(v) << "</td><td>" << u << "</td></tr>";
+  };
+  mrow("质心 X", report.iso.centroidX_um, "µm");
+  mrow("质心 Y", report.iso.centroidY_um, "µm");
+  mrow("Dx (4σ)", report.iso.diameterX_um, "µm");
+  mrow("Dy (4σ)", report.iso.diameterY_um, "µm");
+  mrow("D major", report.iso.diameterMajor_um, "µm");
+  mrow("D minor", report.iso.diameterMinor_um, "µm");
+  mrow("方位角", report.iso.orientation_rad * kRadToDeg, "°");
+  mrow("椭圆度", report.iso.ellipticity, "—");
+  out << "</tbody></table>";
+
+  out << "<h2>宽度工具</h2><table><thead><tr><th>方法</th><th>Wx / µm</th>"
+         "<th>Wy / µm</th><th>D / µm</th></tr></thead><tbody>";
+  auto wrow = [&](const char* n, const beam::core::AxisWidthResult& w) {
+    out << "<tr><td>" << n << "</td><td>" << fmtNum(w.widthX_um) << "</td><td>"
+        << fmtNum(w.widthY_um) << "</td><td>" << fmtNum(w.diameter_um) << "</td></tr>";
+  };
+  wrow("刀口 10/90", report.widths.knife1090);
+  wrow("刀口 16/84", report.widths.knife1684);
+  wrow("% 峰值", report.widths.percentPeak);
+  wrow("% 能量", report.widths.percentEnergy);
+  wrow("包围功率", report.widths.encircled);
+  out << "</tbody></table>";
+
+  out << "<h2>功率</h2><table><tbody>";
+  out << "<tr><td>Σ counts</td><td>" << fmtNum(report.power.sumCounts, 6) << "</td></tr>";
+  out << "<tr><td>峰值</td><td>" << fmtNum(report.power.peakCounts, 6) << "</td></tr>";
+  if (report.power.calibrated) {
+    out << "<tr><td>功率 / W</td><td>" << fmtNum(report.power.power_W, 6) << "</td></tr>";
+  } else {
+    out << "<tr><td>功率</td><td>未标定</td></tr>";
+  }
+  out << "</tbody></table>";
+
+  out << "<footer>Beam Analyzer · 概念实现 / 非正式计量证书 · 可打印后另存为 PDF</footer>";
+  out << "</body></html>\n";
+  return static_cast<bool>(out);
+}
+
+bool exportFrameAnalysisPackage(const std::string& pathPrefix,
+                                const FrameAnalysisReport& report) {
+  const bool md = exportFrameAnalysisMarkdown(pathPrefix + "_report.md", report);
+  const bool html = exportFrameAnalysisHtml(pathPrefix + "_report.html", report);
+  const bool json = exportMetricsJson(pathPrefix + "_metrics.json", report.iso, report.meta);
+  return md && html && json;
+}
+
 }  // namespace beam::io
+
