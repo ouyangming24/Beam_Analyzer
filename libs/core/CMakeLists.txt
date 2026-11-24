@@ -2,6 +2,10 @@ add_library(beam_core
   src/BeamFrame.cpp
   src/Iso11146.cpp
   src/M2Fit.cpp
+  src/M2Scan.cpp
+  src/Roi.cpp
+  src/PowerMetrics.cpp
+  src/Profile.cpp
 )
 
 add_library(beam::core ALIAS beam_core)

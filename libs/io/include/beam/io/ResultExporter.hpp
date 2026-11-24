@@ -1,6 +1,9 @@
 #pragma once
 
 #include "beam/core/Iso11146.hpp"
+#include "beam/core/M2Scan.hpp"
+#include "beam/core/PowerMetrics.hpp"
+#include "beam/core/Profile.hpp"
 
 #include <string>
 
@@ -18,5 +21,22 @@ struct ExportMeta {
 [[nodiscard]] bool exportMetricsCsv(const std::string& path,
                                     const beam::core::Iso11146Metrics& metrics,
                                     const ExportMeta& meta = {});
+
+[[nodiscard]] bool exportPowerJson(const std::string& path,
+                                   const beam::core::PowerMetrics& power,
+                                   const beam::core::PowerCalibration& cal,
+                                   const ExportMeta& meta = {});
+
+[[nodiscard]] bool exportProfileCsv(const std::string& path,
+                                    const beam::core::LineProfile& profile,
+                                    const ExportMeta& meta = {});
+
+[[nodiscard]] bool exportM2ReportMarkdown(const std::string& path,
+                                          const beam::core::M2ScanResult& result,
+                                          const ExportMeta& meta = {});
+
+[[nodiscard]] bool exportM2ReportJson(const std::string& path,
+                                      const beam::core::M2ScanResult& result,
+                                      const ExportMeta& meta = {});
 
 }  // namespace beam::io

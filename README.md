@@ -2,25 +2,34 @@
 
 Windows 桌面光束分析工具（Qt6 / C++），方向对标 Cinogy 类 ISO 光束质量与功率/剖面测量。
 
-**Phase 1（本仓库当前范围）**：离线 CSV 帧分析 MVP + 相机适配端口。  
-**不宣称**完整 Cinogy 功能对等；实机 SDK、ROI、功率校准、实时采集等见后续阶段。
+**Phase 1**：离线 CSV 帧分析 MVP + 相机适配端口。  
+**Phase 2（当前）**：功率/能量标定占位、线剖面、ROI、背景扣除、M² 多点扫描与报告导出、设置持久化。  
+**不宣称**完整 Cinogy 功能对等；真实相机 SDK 见 Phase 3。
 
-## 功能（Phase 1）
+## 功能
 
-- ISO 11146 相关：质心、二阶矩束宽 \(d_\sigma=4\sigma\)、主轴/椭圆度
-- M² 多点拟合接口（库内 API；GUI 多点流程在 Phase 2）
-- CSV 二维强度帧导入（支持 `# pixel_um=` 元数据行）
-- 主窗口：灰度/假彩色显示、指标面板、结果导出 JSON/CSV
-- 相机抽象 `ICamera` + `NullCamera` / `SimulatedCamera`（便于后续接 SDK）
+### Phase 1
+- ISO 11146：质心、二阶矩束宽 \(d_\sigma=4\sigma\)、主轴/椭圆度
+- CSV 二维强度帧导入（`# pixel_um=` 元数据）
+- 灰度/假彩色显示、指标面板、结果导出 JSON/CSV
+- 相机抽象 `ICamera` + `NullCamera` / `SimulatedCamera`
+
+### Phase 2
+- **功率/能量**：`counts→W` 标定占位、曝光时间 → 能量；可导出功率 JSON
+- **线剖面**：单击图像设置十字线；水平/垂直剖面图；可导出剖面 CSV
+- **ROI**：工具栏「框选 ROI」拖拽矩形；「启用 ROI」后指标在裁剪区域计算
+- **背景扣除**：无 / 常数 / 边框均值 / 背景条带均值
+- **M² 多点扫描**：对话框添加轴向测点 → 拟合 M²_X / M²_Y / 合成 → 导出 Markdown/JSON 报告
+- **设置持久化**：色图、背景模式、标定参数、窗口几何（`QSettings`）
 
 ## 仓库结构
 
 ```
-apps/BeamAnalyzer/   Qt6 Widgets 主程序
-libs/core/           ISO 11146 + M² 拟合接口
-libs/io/             CSV 导入与结果导出
+apps/BeamAnalyzer/   Qt6 Widgets 主程序（含剖面图、ROI、M² 对话框）
+libs/core/           ISO 11146、ROI/背景、功率、剖面、M² 拟合与扫描
+libs/io/             CSV 导入与结果/报告导出
 libs/camera/         ICamera 抽象与模拟源
-tests/core/          合成高斯单元测试
+tests/core/          合成高斯与 Phase 2 单元测试
 samples/data/        示例 CSV
 ```
 
@@ -71,14 +80,15 @@ cmake --build build
 ctest --test-dir build --output-on-failure
 ```
 
-## 使用示例 CSV
+## 使用示例
 
 1. 启动 `BeamAnalyzer`
-2. **打开 CSV…** → 选择 `samples/data/gaussian_ellipse.csv`
-3. 查看假彩色图与右侧 ISO 11146 指标
-4. **导出 JSON…** / **导出 CSV…** 保存结果
-
-也可点击 **模拟帧** 使用内置 `SimulatedCamera`（无需硬件）。
+2. **打开 CSV…** → `samples/data/gaussian_ellipse.csv`（或 **模拟帧**）
+3. 单击图像设置剖面十字线；查看下方水平/垂直剖面
+4. **框选 ROI** → 勾选「启用 ROI」；可选背景扣除模式
+5. 设置 `counts→W` / 曝光以查看标定功率/能量（占位）
+6. **M² 扫描…** → 添加 ≥3 个轴向测点 → 拟合 → 导出报告
+7. 导出 ISO 指标 JSON/CSV、功率 JSON、剖面 CSV
 
 ### CSV 格式
 
@@ -89,8 +99,8 @@ ctest --test-dir build --output-on-failure
 
 | 阶段 | 内容 |
 |------|------|
-| Phase 1 | 离线 CSV MVP、ISO 基础量、相机端口（本 PR） |
-| Phase 2 | 功率/剖面工具、ROI、背景扣除、M² 扫描 UI |
+| Phase 1 | 离线 CSV MVP、ISO 基础量、相机端口 |
+| Phase 2 | 功率/剖面、ROI、背景扣除、M² 扫描 UI、设置持久化（本 PR） |
 | Phase 3 | 真实相机 SDK 插件、触发与标定 |
 
 ## 许可

@@ -1,5 +1,6 @@
 #include "beam/io/ResultExporter.hpp"
 
+#include <algorithm>
 #include <cmath>
 #include <fstream>
 #include <iomanip>
@@ -35,6 +36,17 @@ std::string escapeJson(const std::string& s) {
     }
   }
   return out;
+}
+
+void writeFitJson(std::ostream& out, const char* key, const beam::core::M2FitResult& f) {
+  out << "  \"" << key << "\": {\n";
+  out << "    \"valid\": " << (f.valid ? "true" : "false") << ",\n";
+  out << "    \"m2\": " << f.m2 << ",\n";
+  out << "    \"waist_diameter_um\": " << f.waistDiameter_um << ",\n";
+  out << "    \"waist_z_mm\": " << f.waistZ_mm << ",\n";
+  out << "    \"rms_residual\": " << f.rmsResidual << ",\n";
+  out << "    \"message\": \"" << escapeJson(f.message) << "\"\n";
+  out << "  }";
 }
 
 }  // namespace
@@ -91,6 +103,105 @@ bool exportMetricsCsv(const std::string& path,
   out << "orientation_rad," << metrics.orientation_rad << "\n";
   out << "orientation_deg," << (metrics.orientation_rad * kRadToDeg) << "\n";
   out << "ellipticity," << metrics.ellipticity << "\n";
+  return static_cast<bool>(out);
+}
+
+bool exportPowerJson(const std::string& path,
+                     const beam::core::PowerMetrics& power,
+                     const beam::core::PowerCalibration& cal,
+                     const ExportMeta& meta) {
+  std::ofstream out(path);
+  if (!out) {
+    return false;
+  }
+  out << std::setprecision(10);
+  out << "{\n";
+  out << "  \"schema\": \"beam_analyzer.power.v1\",\n";
+  out << "  \"source\": \"" << escapeJson(meta.sourcePath) << "\",\n";
+  out << "  \"note\": \"" << escapeJson(meta.note) << "\",\n";
+  out << "  \"valid\": " << (power.valid ? "true" : "false") << ",\n";
+  out << "  \"calibrated\": " << (power.calibrated ? "true" : "false") << ",\n";
+  out << "  \"sum_counts\": " << power.sumCounts << ",\n";
+  out << "  \"peak_counts\": " << power.peakCounts << ",\n";
+  out << "  \"mean_counts\": " << power.meanCounts << ",\n";
+  out << "  \"power_W\": " << power.power_W << ",\n";
+  out << "  \"energy_J\": " << power.energy_J << ",\n";
+  out << "  \"calibration\": {\n";
+  out << "    \"counts_to_watts\": " << cal.countsToWatts << ",\n";
+  out << "    \"exposure_s\": " << cal.exposure_s << ",\n";
+  out << "    \"wavelength_nm\": " << cal.wavelength_nm << "\n";
+  out << "  }\n";
+  out << "}\n";
+  return static_cast<bool>(out);
+}
+
+bool exportProfileCsv(const std::string& path,
+                      const beam::core::LineProfile& profile,
+                      const ExportMeta& meta) {
+  std::ofstream out(path);
+  if (!out) {
+    return false;
+  }
+  out << std::setprecision(10);
+  out << "# source=" << meta.sourcePath << "\n";
+  out << "# note=" << meta.note << "\n";
+  out << "position_um,intensity\n";
+  const std::size_t n = std::min(profile.position_um.size(), profile.intensity.size());
+  for (std::size_t i = 0; i < n; ++i) {
+    out << profile.position_um[i] << "," << profile.intensity[i] << "\n";
+  }
+  return static_cast<bool>(out);
+}
+
+bool exportM2ReportMarkdown(const std::string& path,
+                            const beam::core::M2ScanResult& result,
+                            const ExportMeta& meta) {
+  std::ofstream out(path);
+  if (!out) {
+    return false;
+  }
+  out << beam::core::formatM2Report(result);
+  if (!meta.sourcePath.empty() || !meta.note.empty()) {
+    out << "\nSource: " << meta.sourcePath << "\n";
+    out << "Note: " << meta.note << "\n";
+  }
+  return static_cast<bool>(out);
+}
+
+bool exportM2ReportJson(const std::string& path,
+                        const beam::core::M2ScanResult& result,
+                        const ExportMeta& meta) {
+  std::ofstream out(path);
+  if (!out) {
+    return false;
+  }
+  out << std::setprecision(10);
+  out << "{\n";
+  out << "  \"schema\": \"beam_analyzer.m2_scan.v1\",\n";
+  out << "  \"source\": \"" << escapeJson(meta.sourcePath) << "\",\n";
+  out << "  \"note\": \"" << escapeJson(meta.note) << "\",\n";
+  out << "  \"wavelength_nm\": " << result.wavelength_nm << ",\n";
+  out << "  \"valid\": " << (result.valid ? "true" : "false") << ",\n";
+  out << "  \"message\": \"" << escapeJson(result.message) << "\",\n";
+  out << "  \"points\": [\n";
+  for (std::size_t i = 0; i < result.points.size(); ++i) {
+    const auto& p = result.points[i];
+    out << "    {\"z_mm\": " << p.z_mm << ", \"diameter_x_um\": " << p.diameterX_um
+        << ", \"diameter_y_um\": " << p.diameterY_um << ", \"valid\": "
+        << (p.valid ? "true" : "false") << ", \"source\": \""
+        << escapeJson(p.sourceLabel) << "\"}";
+    if (i + 1 < result.points.size()) {
+      out << ",";
+    }
+    out << "\n";
+  }
+  out << "  ],\n";
+  writeFitJson(out, "fit_x", result.fitX);
+  out << ",\n";
+  writeFitJson(out, "fit_y", result.fitY);
+  out << ",\n";
+  writeFitJson(out, "fit_combined", result.fitCombined);
+  out << "\n}\n";
   return static_cast<bool>(out);
 }
 

@@ -10,6 +10,12 @@ add_executable(BeamAnalyzer
   src/MainWindow.hpp
   src/FalseColor.cpp
   src/FalseColor.hpp
+  src/ImageView.cpp
+  src/ImageView.hpp
+  src/ProfilePlot.cpp
+  src/ProfilePlot.hpp
+  src/M2ScanDialog.cpp
+  src/M2ScanDialog.hpp
 )
 
 target_link_libraries(BeamAnalyzer
