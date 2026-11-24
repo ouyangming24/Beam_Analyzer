@@ -120,9 +120,26 @@ QLabel#MetricValue {
 }
 QScrollArea { border: none; background: #c8d2e0; }
 QWidget#ControlColumn { background: #e8edf4; }
-QWidget#ImageChrome {
+QWidget#ImageChrome, QWidget#PlayerBar {
   background: #d5dde8; border-bottom: 1px solid #aeb9ca;
 }
+QWidget#StatusStrip {
+  background: #eef3f9; border-bottom: 1px solid #b7c2d1;
+}
+QLabel#StatusStripMode { font-weight: 700; color: #1d4ed8; font-size: 11px; }
+QLabel#StatusStripHint { color: #64748b; font-size: 10px; }
+QLabel#StatusValidityChip {
+  border: 1px solid #94a3b8; border-radius: 2px; padding: 1px 7px;
+  font-weight: 700; font-size: 10px; letter-spacing: 0.04em; color: #64748b;
+  background: #e2e8f0;
+}
+QLabel#StatusValidityChip[validity="good"] {
+  color: #166534; background: #dcfce7; border-color: #86efac;
+}
+QLabel#StatusValidityChip[validity="bad"] {
+  color: #991b1b; background: #fee2e2; border-color: #fca5a5;
+}
+QLabel#ColorLegend { color: #475569; font-size: 10px; }
 QSplitter::handle { background: #aeb9ca; width: 2px; height: 2px; }
 QSlider::groove:horizontal {
   height: 5px; background: #b7c2d1; border-radius: 2px;
@@ -269,9 +286,26 @@ QLabel#MetricValue {
 }
 QScrollArea { border: none; background: #10141b; }
 QWidget#ControlColumn { background: #1a1f28; }
-QWidget#ImageChrome {
+QWidget#ImageChrome, QWidget#PlayerBar {
   background: #1a1f28; border-bottom: 1px solid #2a3140;
 }
+QWidget#StatusStrip {
+  background: #141922; border-bottom: 1px solid #2a3140;
+}
+QLabel#StatusStripMode { font-weight: 700; color: #7aa2ff; font-size: 11px; }
+QLabel#StatusStripHint { color: #8b97ab; font-size: 10px; }
+QLabel#StatusValidityChip {
+  border: 1px solid #3a4558; border-radius: 2px; padding: 1px 7px;
+  font-weight: 700; font-size: 10px; letter-spacing: 0.04em; color: #9aa6ba;
+  background: #222833;
+}
+QLabel#StatusValidityChip[validity="good"] {
+  color: #86efac; background: #14532d; border-color: #166534;
+}
+QLabel#StatusValidityChip[validity="bad"] {
+  color: #fca5a5; background: #7f1d1d; border-color: #991b1b;
+}
+QLabel#ColorLegend { color: #8b97ab; font-size: 10px; }
 QSplitter::handle { background: #2a3140; width: 2px; height: 2px; }
 QSlider::groove:horizontal {
   height: 5px; background: #2a3140; border-radius: 2px;

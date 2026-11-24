@@ -36,6 +36,7 @@
 #include <QSlider>
 #include <QSplitter>
 #include <QStatusBar>
+#include <QStyle>
 #include <QTimer>
 #include <QToolBar>
 #include <QUrl>
@@ -190,6 +191,13 @@ void MainWindow::rebuildUi() {
   connect(colorMapBox_, QOverload<int>::of(&QComboBox::currentIndexChanged), this,
           &MainWindow::onColorMapChanged);
   tool->addWidget(colorMapBox_);
+  tool->addWidget(new QLabel(QStringLiteral(" 映射 ")));
+  intensityScaleBox_ = new QComboBox;
+  intensityScaleBox_->addItem(QStringLiteral("线性"), static_cast<int>(IntensityScale::Linear));
+  intensityScaleBox_->addItem(QStringLiteral("对数"), static_cast<int>(IntensityScale::Log));
+  connect(intensityScaleBox_, QOverload<int>::of(&QComboBox::currentIndexChanged), this,
+          &MainWindow::onIntensityScaleChanged);
+  tool->addWidget(intensityScaleBox_);
   tool->addSeparator();
   tool->addAction(themeAction_);
 
@@ -197,7 +205,31 @@ void MainWindow::rebuildUi() {
   // client width (avoids orphan dark gutter past the metrics dock on maximize).
   auto* centralHost = new QWidget;
   centralHost->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
-  auto* centralLayout = new QHBoxLayout(centralHost);
+  auto* centralOuter = new QVBoxLayout(centralHost);
+  centralOuter->setContentsMargins(0, 0, 0, 0);
+  centralOuter->setSpacing(0);
+
+  auto* statusStrip = new QWidget;
+  statusStrip->setObjectName(QStringLiteral("StatusStrip"));
+  statusStrip->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
+  auto* stripLay = new QHBoxLayout(statusStrip);
+  stripLay->setContentsMargins(10, 4, 10, 4);
+  stripLay->setSpacing(14);
+  statusStripMode_ = new QLabel(QStringLiteral("离线文件测量"));
+  statusStripMode_->setObjectName(QStringLiteral("StatusStripMode"));
+  statusStripSource_ = new QLabel(QStringLiteral("尚未载入帧"));
+  statusStripValidity_ = new QLabel(QStringLiteral("NO DATA"));
+  statusStripValidity_->setObjectName(QStringLiteral("StatusValidityChip"));
+  statusStripHint_ = new QLabel(
+      QStringLiteral("打开 CSV/图像，或连接模拟相机 · 显示映射不影响 ISO 数值"));
+  statusStripHint_->setObjectName(QStringLiteral("StatusStripHint"));
+  stripLay->addWidget(statusStripMode_);
+  stripLay->addWidget(statusStripSource_, 1);
+  stripLay->addWidget(statusStripValidity_);
+  stripLay->addWidget(statusStripHint_);
+  centralOuter->addWidget(statusStrip);
+
+  auto* centralLayout = new QHBoxLayout;
   centralLayout->setContentsMargins(0, 0, 0, 0);
   centralLayout->setSpacing(0);
 
@@ -220,6 +252,10 @@ void MainWindow::rebuildUi() {
   imageChromeLabel_ = new QLabel(QStringLiteral("强度图 · 假彩色 / 十字线剖面 · 无帧"));
   imageChromeLabel_->setObjectName(QStringLiteral("SectionHeader"));
   chromeLay->addWidget(imageChromeLabel_, 1);
+  colorLegendLabel_ = new QLabel(QStringLiteral("▣ 0 → 峰值"));
+  colorLegendLabel_->setObjectName(QStringLiteral("ColorLegend"));
+  colorLegendLabel_->setToolTip(QStringLiteral("显示色标（显示层；对数仅影响假彩映射）"));
+  chromeLay->addWidget(colorLegendLabel_);
   leftSplit->addWidget(imageChrome);
 
   imageView_ = new ImageView;
@@ -237,12 +273,32 @@ void MainWindow::rebuildUi() {
   leftSplit->addWidget(scroll);
 
   auto* scrubRow = new QWidget;
-  scrubRow->setObjectName(QStringLiteral("ImageChrome"));
+  scrubRow->setObjectName(QStringLiteral("PlayerBar"));
   scrubRow->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
   auto* scrubLayout = new QHBoxLayout(scrubRow);
-  scrubLayout->setContentsMargins(8, 2, 8, 2);
-  scrubLayout->setSpacing(6);
-  scrubLayout->addWidget(new QLabel(QStringLiteral("帧历史")));
+  scrubLayout->setContentsMargins(8, 3, 8, 3);
+  scrubLayout->setSpacing(4);
+  scrubLayout->addWidget(new QLabel(QStringLiteral("帧播放")));
+  auto* firstBtn = new QPushButton(QStringLiteral("⏮"));
+  auto* prevBtn = new QPushButton(QStringLiteral("◀"));
+  playBtn_ = new QPushButton(QStringLiteral("▶"));
+  auto* nextBtn = new QPushButton(QStringLiteral("▶|"));
+  auto* lastBtn = new QPushButton(QStringLiteral("⏭"));
+  for (QPushButton* b : {firstBtn, prevBtn, playBtn_, nextBtn, lastBtn}) {
+    b->setFixedWidth(32);
+    b->setToolTip(QStringLiteral("帧历史播放（离线 / 暂停采集后可用）"));
+  }
+  playBtn_->setObjectName(QStringLiteral("AccentButton"));
+  connect(firstBtn, &QPushButton::clicked, this, &MainWindow::onFrameFirst);
+  connect(prevBtn, &QPushButton::clicked, this, &MainWindow::onFramePrev);
+  connect(playBtn_, &QPushButton::clicked, this, &MainWindow::onPlayToggle);
+  connect(nextBtn, &QPushButton::clicked, this, &MainWindow::onFrameNext);
+  connect(lastBtn, &QPushButton::clicked, this, &MainWindow::onFrameLast);
+  scrubLayout->addWidget(firstBtn);
+  scrubLayout->addWidget(prevBtn);
+  scrubLayout->addWidget(playBtn_);
+  scrubLayout->addWidget(nextBtn);
+  scrubLayout->addWidget(lastBtn);
   frameScrubber_ = new QSlider(Qt::Horizontal);
   frameScrubber_->setEnabled(false);
   frameScrubber_->setMinimum(0);
@@ -253,9 +309,22 @@ void MainWindow::rebuildUi() {
   scrubLayout->addWidget(frameScrubLabel_);
   leftSplit->addWidget(scrubRow);
 
+  playTimer_ = new QTimer(this);
+  playTimer_->setInterval(120);
+  connect(playTimer_, &QTimer::timeout, this, &MainWindow::onPlayTick);
+
   auto* profiles = new QWidget;
+  profiles->setObjectName(QStringLiteral("ProfilePanel"));
   profiles->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Preferred);
-  auto* profilesLayout = new QHBoxLayout(profiles);
+  auto* profilesOuter = new QVBoxLayout(profiles);
+  profilesOuter->setContentsMargins(0, 0, 0, 0);
+  profilesOuter->setSpacing(0);
+  auto* profilesHeader = new QLabel(QStringLiteral("线剖面 · 水平 / 垂直（与十字线同步）"));
+  profilesHeader->setObjectName(QStringLiteral("SectionHeader"));
+  profilesHeader->setContentsMargins(8, 4, 8, 2);
+  profilesOuter->addWidget(profilesHeader);
+  auto* profilesRow = new QWidget;
+  auto* profilesLayout = new QHBoxLayout(profilesRow);
   profilesLayout->setContentsMargins(0, 0, 0, 0);
   profilesLayout->setSpacing(2);
   hProfilePlot_ = new ProfilePlot;
@@ -264,6 +333,7 @@ void MainWindow::rebuildUi() {
   vProfilePlot_->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
   profilesLayout->addWidget(hProfilePlot_, 1);
   profilesLayout->addWidget(vProfilePlot_, 1);
+  profilesOuter->addWidget(profilesRow, 1);
   leftSplit->addWidget(profiles);
   leftSplit->setStretchFactor(0, 0);
   leftSplit->setStretchFactor(1, 5);
@@ -442,6 +512,7 @@ void MainWindow::rebuildUi() {
   mainSplit->setStretchFactor(1, 0);
   mainSplit->setSizes({1000, 320});
   centralLayout->addWidget(mainSplit, /*stretch=*/1);
+  centralOuter->addLayout(centralLayout, 1);
   setCentralWidget(centralHost);
 
   metricsPanel_ = new MetricsPanel;
@@ -826,12 +897,14 @@ void MainWindow::onLiveTick() {
                             .arg(QString::fromStdString(activeCamera_->info().id)));
 }
 
-void MainWindow::onFrameScrub(int index) {
-  if (scrubbing_ || frameHistory_.empty()) {
+void MainWindow::seekHistory(int index) {
+  if (frameHistory_.empty()) {
     return;
   }
-  if (index < 0 || index >= static_cast<int>(frameHistory_.size())) {
-    return;
+  index = std::clamp(index, 0, static_cast<int>(frameHistory_.size()) - 1);
+  if (frameScrubber_->value() != index) {
+    const QSignalBlocker b(frameScrubber_);
+    frameScrubber_->setValue(index);
   }
   scrubbing_ = true;
   applyFrame(frameHistory_[static_cast<std::size_t>(index)],
@@ -840,6 +913,80 @@ void MainWindow::onFrameScrub(int index) {
   scrubbing_ = false;
   frameScrubLabel_->setText(
       QStringLiteral("%1 / %2").arg(index + 1).arg(frameHistory_.size()));
+}
+
+void MainWindow::stopHistoryPlayback() {
+  historyPlaying_ = false;
+  if (playTimer_) {
+    playTimer_->stop();
+  }
+  if (playBtn_) {
+    playBtn_->setText(QStringLiteral("▶"));
+  }
+}
+
+void MainWindow::onFrameScrub(int index) {
+  if (scrubbing_ || frameHistory_.empty()) {
+    return;
+  }
+  seekHistory(index);
+}
+
+void MainWindow::onPlayToggle() {
+  if (liveActive_) {
+    statusLabel_->setText(QStringLiteral("实时采集中 — 请先停止预览再回放帧历史"));
+    return;
+  }
+  if (frameHistory_.size() < 2) {
+    statusLabel_->setText(QStringLiteral("帧历史不足，无法播放"));
+    return;
+  }
+  historyPlaying_ = !historyPlaying_;
+  if (historyPlaying_) {
+    playBtn_->setText(QStringLiteral("❚❚"));
+    playTimer_->start();
+  } else {
+    stopHistoryPlayback();
+  }
+}
+
+void MainWindow::onPlayTick() {
+  if (!historyPlaying_ || frameHistory_.size() < 2) {
+    stopHistoryPlayback();
+    return;
+  }
+  int next = frameScrubber_->value() + 1;
+  if (next > frameScrubber_->maximum()) {
+    next = 0;
+  }
+  seekHistory(next);
+}
+
+void MainWindow::onFrameFirst() {
+  stopHistoryPlayback();
+  seekHistory(0);
+}
+
+void MainWindow::onFramePrev() {
+  stopHistoryPlayback();
+  seekHistory(frameScrubber_->value() - 1);
+}
+
+void MainWindow::onFrameNext() {
+  stopHistoryPlayback();
+  seekHistory(frameScrubber_->value() + 1);
+}
+
+void MainWindow::onFrameLast() {
+  stopHistoryPlayback();
+  seekHistory(static_cast<int>(frameHistory_.size()) - 1);
+}
+
+void MainWindow::onIntensityScaleChanged(int index) {
+  intensityScale_ =
+      static_cast<IntensityScale>(intensityScaleBox_->itemData(index).toInt());
+  refreshImage();
+  updateMeasurementChrome();
 }
 
 beam::core::AnalysisPrep MainWindow::currentPrep() const {
@@ -944,7 +1091,8 @@ void MainWindow::refreshImage() {
   }
   double mn = 0;
   double mx = 0;
-  const QImage displayBase = frameToImage(*rawFrame_, colorMap_, &mn, &mx);
+  const QImage displayBase =
+      frameToImage(*rawFrame_, colorMap_, &mn, &mx, intensityScale_);
   const QImage displayScaled =
       displayBase.scaled(std::max(displayBase.width(), 480),
                          std::max(displayBase.height(), 360), Qt::KeepAspectRatio,
@@ -1018,6 +1166,55 @@ void MainWindow::updateStatusBarDetails() {
           .arg(fmt(metrics_->diameterY_um, 4)));
 }
 
+void MainWindow::updateStatusStrip() {
+  if (!statusStripMode_) {
+    return;
+  }
+  const bool hasFrame = rawFrame_.has_value();
+  const bool camOpen = activeCamera_ && activeCamera_->isOpen();
+  if (liveActive_) {
+    statusStripMode_->setText(QStringLiteral("实时采集"));
+  } else if (camOpen) {
+    statusStripMode_->setText(QStringLiteral("相机已连接 · 未采集"));
+  } else if (hasFrame) {
+    statusStripMode_->setText(QStringLiteral("离线文件测量"));
+  } else {
+    statusStripMode_->setText(QStringLiteral("离线 · 待命"));
+  }
+
+  if (!hasFrame) {
+    statusStripSource_->setText(QStringLiteral("尚未载入帧 · 可拖放 CSV/PNG/BMP/TIFF/JPEG"));
+  } else {
+    statusStripSource_->setText(
+        QStringLiteral("%1×%2 · %3")
+            .arg(rawFrame_->width)
+            .arg(rawFrame_->height)
+            .arg(sourcePath_));
+  }
+
+  if (!hasFrame) {
+    statusStripValidity_->setText(QStringLiteral("NO DATA"));
+    statusStripValidity_->setProperty("validity", QStringLiteral("neutral"));
+  } else if (metrics_ && metrics_->valid) {
+    statusStripValidity_->setText(QStringLiteral("VALID"));
+    statusStripValidity_->setProperty("validity", QStringLiteral("good"));
+  } else {
+    statusStripValidity_->setText(QStringLiteral("INVALID"));
+    statusStripValidity_->setProperty("validity", QStringLiteral("bad"));
+  }
+  statusStripValidity_->style()->unpolish(statusStripValidity_);
+  statusStripValidity_->style()->polish(statusStripValidity_);
+
+  if (liveActive_) {
+    statusStripHint_->setText(QStringLiteral("LIVE · 指标随帧刷新 · 暂停后可用帧播放条回看"));
+  } else if (historyPlaying_) {
+    statusStripHint_->setText(QStringLiteral("帧历史回放中 · 剖面与指标随 scrub 同步"));
+  } else {
+    statusStripHint_->setText(
+        QStringLiteral("显示映射（线性/对数）不影响 ISO 数值 · M² 工作站可导入双轴 CSV"));
+  }
+}
+
 void MainWindow::updateMeasurementChrome() {
   const bool hasFrame = rawFrame_.has_value();
   const bool camOpen = activeCamera_ && activeCamera_->isOpen();
@@ -1039,13 +1236,16 @@ void MainWindow::updateMeasurementChrome() {
   if (imageChromeLabel_) {
     const QString cmap =
         (colorMap_ == ColorMap::Grayscale) ? QStringLiteral("灰度") : QStringLiteral("假彩色");
+    const QString scale =
+        (intensityScale_ == IntensityScale::Log) ? QStringLiteral("对数") : QStringLiteral("线性");
     if (!hasFrame) {
       imageChromeLabel_->setText(
-          QStringLiteral("强度图 · %1 · 十字线剖面 · 无帧").arg(cmap));
+          QStringLiteral("强度图 · %1 · %2 · 十字线剖面 · 无帧").arg(cmap, scale));
     } else {
       imageChromeLabel_->setText(
-          QStringLiteral("强度图 · %1 · %2×%3 · 十字 (%4,%5) · %6")
+          QStringLiteral("强度图 · %1/%2 · %3×%4 · 十字 (%5,%6) · %7")
               .arg(cmap)
+              .arg(scale)
               .arg(rawFrame_->width)
               .arg(rawFrame_->height)
               .arg(crossX_)
@@ -1053,6 +1253,12 @@ void MainWindow::updateMeasurementChrome() {
               .arg(sourcePath_));
     }
   }
+  if (colorLegendLabel_) {
+    colorLegendLabel_->setText(intensityScale_ == IntensityScale::Log
+                                   ? QStringLiteral("▣ log 低 → 峰值")
+                                   : QStringLiteral("▣ 0 → 峰值"));
+  }
+  updateStatusStrip();
 }
 
 bool MainWindow::ensureMetrics() const {
