@@ -83,6 +83,13 @@ class MainWindow final : public QMainWindow {
   void onSoftwareTrigger();
   void onLiveTick();
   void onFrameScrub(int index);
+  void onPlayToggle();
+  void onPlayTick();
+  void onFrameFirst();
+  void onFramePrev();
+  void onFrameNext();
+  void onFrameLast();
+  void onIntensityScaleChanged(int index);
 
  private:
   void rebuildUi();
@@ -105,6 +112,9 @@ class MainWindow final : public QMainWindow {
   void setCameraUiConnected(bool connected);
   void updateStatusBarDetails();
   void updateMeasurementChrome();
+  void updateStatusStrip();
+  void seekHistory(int index);
+  void stopHistoryPlayback();
 
   ImageView* imageView_ = nullptr;
   MetricsPanel* metricsPanel_ = nullptr;
@@ -113,8 +123,16 @@ class MainWindow final : public QMainWindow {
   QLabel* statusMetricsBrief_ = nullptr;
   QLabel* statusModeChip_ = nullptr;
   QLabel* statusLiveChip_ = nullptr;
+  QLabel* statusStripMode_ = nullptr;
+  QLabel* statusStripSource_ = nullptr;
+  QLabel* statusStripValidity_ = nullptr;
+  QLabel* statusStripHint_ = nullptr;
   QLabel* imageChromeLabel_ = nullptr;
+  QLabel* colorLegendLabel_ = nullptr;
   QComboBox* colorMapBox_ = nullptr;
+  QComboBox* intensityScaleBox_ = nullptr;
+  QPushButton* playBtn_ = nullptr;
+  QTimer* playTimer_ = nullptr;
   QComboBox* backgroundBox_ = nullptr;
   QDoubleSpinBox* bgConstantSpin_ = nullptr;
   QDoubleSpinBox* countsToWattsSpin_ = nullptr;
@@ -154,6 +172,7 @@ class MainWindow final : public QMainWindow {
   int crossY_ = -1;
   QString sourcePath_;
   ColorMap colorMap_ = ColorMap::FalseColor;
+  IntensityScale intensityScale_ = IntensityScale::Linear;
   AppTheme theme_ = AppTheme::Dark;
   std::unique_ptr<beam::camera::ICamera> activeCamera_;
   std::vector<beam::camera::CameraInfo> discoveredCameras_;
@@ -163,6 +182,7 @@ class MainWindow final : public QMainWindow {
   static constexpr int kMaxHistory = 120;
   bool scrubbing_ = false;
   bool liveActive_ = false;
+  bool historyPlaying_ = false;
 };
 
 }  // namespace beam::ui

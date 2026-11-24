@@ -87,11 +87,17 @@ void ProfilePlot::setMultiSeries(const std::vector<PlotSeries>& series,
   update();
 }
 
+void ProfilePlot::setZeroLineEnabled(bool enabled) {
+  zeroLine_ = enabled;
+  update();
+}
+
 void ProfilePlot::clearProfile() {
   series_.clear();
   title_.clear();
   xLabel_.clear();
   yLabel_.clear();
+  zeroLine_ = false;
   update();
 }
 
@@ -158,6 +164,10 @@ void ProfilePlot::paintEvent(QPaintEvent*) {
   if (!init) {
     return;
   }
+  if (zeroLine_) {
+    yMin = std::min(yMin, 0.0);
+    yMax = std::max(yMax, 0.0);
+  }
   if (!(yMax > yMin)) {
     yMax = yMin + 1.0;
   }
@@ -173,6 +183,12 @@ void ProfilePlot::paintEvent(QPaintEvent*) {
   for (int g = 1; g < 4; ++g) {
     const int yy = top + (bottom - top) * g / 4;
     p.drawLine(left, yy, right, yy);
+  }
+  if (zeroLine_ && yMax > 0.0 && yMin < 0.0) {
+    const double yn0 = (0.0 - yMin) / (yMax - yMin);
+    const int y0 = static_cast<int>(std::lround(bottom - yn0 * (bottom - top)));
+    p.setPen(QPen(QColor(fg.red(), fg.green(), fg.blue(), 120), 1, Qt::DashLine));
+    p.drawLine(left, y0, right, y0);
   }
 
   auto toPoly = [&](const std::vector<double>& xs, const std::vector<double>& ys) {

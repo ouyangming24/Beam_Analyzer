@@ -1,3 +1,4 @@
+#include "beam/core/CausticCsv.hpp"
 #include "beam/core/Iso11146.hpp"
 #include "beam/core/M2Fit.hpp"
 #include "beam/core/M2Scan.hpp"
@@ -211,15 +212,67 @@ int main() {
     namespace fs = std::filesystem;
     const fs::path dir = fs::temp_directory_path() / "beam_analyzer_test";
     fs::create_directories(dir);
-    expectTrue(beam::io::exportM2ReportMarkdown((dir / "m2.md").string(), scan, {"", "test"}),
+    beam::io::ExportMeta meta;
+    meta.note = "test";
+    meta.sampleName = "synth";
+    meta.operatorName = "ci";
+    expectTrue(beam::io::exportM2ReportMarkdown((dir / "m2.md").string(), scan, meta),
                "export M2 markdown");
-    expectTrue(beam::io::exportM2ReportJson((dir / "m2.json").string(), scan, {"", "test"}),
+    expectTrue(beam::io::exportM2ReportJson((dir / "m2.json").string(), scan, meta),
                "export M2 json");
+    expectTrue(beam::io::exportM2ReportHtml((dir / "m2.html").string(), scan, meta),
+               "export M2 html");
+    {
+      std::ifstream html((dir / "m2.html").string());
+      const std::string body((std::istreambuf_iterator<char>(html)),
+                             std::istreambuf_iterator<char>());
+      expectTrue(body.find("Beam Analyzer") != std::string::npos, "html has brand");
+      expectTrue(body.find("M²") != std::string::npos || body.find("M2") != std::string::npos,
+                 "html mentions M2");
+    }
 
     const auto h = beam::core::extractHorizontalProfile(
         makeGaussianFrame(16, 16, 8, 8, 2, 2), 8);
     expectTrue(beam::io::exportProfileCsv((dir / "prof.csv").string(), h, {"", "p"}),
                "export profile csv");
+  }
+
+  // Dual-axis caustic CSV (diameter + radius forms) + diagnostics
+  {
+    const char* diamCsv =
+        "z_mm,Dx_um,Dy_um,included,note\n"
+        "-20,120,118,1,\n"
+        "-10,105,104,1,\n"
+        "0,100,100,1,waist\n"
+        "10,105,106,1,\n"
+        "20,120,122,0,exclude-demo\n";
+    const auto parsed = beam::core::parseCausticCsv(diamCsv);
+    expectTrue(parsed.ok, "parse diameter caustic CSV");
+    expectTrue(parsed.points.size() == 5, "five caustic rows");
+    expectTrue(parsed.points[4].valid == false, "excluded row marked invalid");
+    expectTrue(!parsed.radiiInput, "diameter mode");
+
+    const char* radiusCsv =
+        "z_mm,wx_um,wy_um\n"
+        "-10,50,51\n"
+        "0,40,41\n"
+        "10,50,52\n";
+    const auto rad = beam::core::parseCausticCsv(radiusCsv);
+    expectTrue(rad.ok && rad.radiiInput, "parse radius caustic CSV");
+    expectNear(rad.points[1].diameterX_um, 80.0, 1e-9, "wx→Dx doubles");
+
+    const auto scan = beam::core::analyzeM2Scan(parsed.points, 1064.0);
+    expectTrue(scan.valid, "fit after CSV import");
+    const auto dx = beam::core::diagnoseM2Axis(scan.fitX, scan.points, false);
+    expectTrue(dx.includedCount == 4, "diagnostics count excludes invalid");
+    const auto rich = beam::core::formatM2ReportRich(scan, {"s", "op", "dev", "cal", "env"});
+    expectTrue(rich.find("Coverage") != std::string::npos ||
+                   rich.find("coverage") != std::string::npos ||
+                   rich.find("覆盖") != std::string::npos ||
+                   rich.find("metadata") != std::string::npos ||
+                   rich.find("Sample") != std::string::npos ||
+                   rich.find("Measurement metadata") != std::string::npos,
+               "rich report has metadata/coverage");
   }
 
   // --- Phase 5: noise floor + MomentOptions ---

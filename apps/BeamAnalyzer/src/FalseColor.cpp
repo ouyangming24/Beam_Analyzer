@@ -8,7 +8,6 @@ namespace {
 
 QRgb mapFalseColor(double t) {
   t = std::clamp(t, 0.0, 1.0);
-  // Piecewise Jet-like ramp
   int r = 0;
   int g = 0;
   int b = 0;
@@ -36,12 +35,29 @@ QRgb mapFalseColor(double t) {
   return qRgb(r, g, b);
 }
 
+double normalizeValue(double v, double mn, double mx, IntensityScale scale) {
+  if (!(mx > mn)) {
+    return 0.0;
+  }
+  if (scale == IntensityScale::Linear) {
+    return (v - mn) / (mx - mn);
+  }
+  // Log display: shift so positives map; clip non-positive to floor.
+  const double floor = std::max(1e-12, mx * 1e-6);
+  const double vv = std::max(v, floor);
+  const double lo = std::max(mn, floor);
+  const double hi = std::max(mx, lo * 1.000001);
+  const double t = (std::log10(vv) - std::log10(lo)) / (std::log10(hi) - std::log10(lo));
+  return std::clamp(t, 0.0, 1.0);
+}
+
 }  // namespace
 
 QImage frameToImage(const beam::core::BeamFrame& frame,
                     ColorMap map,
                     double* outMin,
-                    double* outMax) {
+                    double* outMax,
+                    IntensityScale scale) {
   if (frame.empty()) {
     return {};
   }
@@ -59,13 +75,13 @@ QImage frameToImage(const beam::core::BeamFrame& frame,
     *outMax = mx;
   }
 
-  const double span = (mx > mn) ? (mx - mn) : 1.0;
   QImage img(static_cast<int>(frame.width), static_cast<int>(frame.height),
              QImage::Format_RGB32);
 
   for (std::size_t y = 0; y < frame.height; ++y) {
     for (std::size_t x = 0; x < frame.width; ++x) {
-      const double t = (frame.intensity[y * frame.width + x] - mn) / span;
+      const double t =
+          normalizeValue(frame.intensity[y * frame.width + x], mn, mx, scale);
       if (map == ColorMap::Grayscale) {
         const int g = static_cast<int>(std::lround(255.0 * std::clamp(t, 0.0, 1.0)));
         img.setPixel(static_cast<int>(x), static_cast<int>(y), qRgb(g, g, g));

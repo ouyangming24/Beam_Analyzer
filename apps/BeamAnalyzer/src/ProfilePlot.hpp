@@ -37,6 +37,8 @@ class ProfilePlot final : public QWidget {
                       const QString& title,
                       const QString& xLabel = QString(),
                       const QString& yLabel = QString());
+  /// Draw a horizontal reference at y=0 (residual charts).
+  void setZeroLineEnabled(bool enabled);
   void clearProfile();
 
  protected:
@@ -49,6 +51,7 @@ class ProfilePlot final : public QWidget {
   QString title_;
   QString xLabel_;
   QString yLabel_;
+  bool zeroLine_ = false;
 };
 
 }  // namespace beam::ui
