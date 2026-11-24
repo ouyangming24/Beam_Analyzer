@@ -2,12 +2,23 @@
 
 #include "beam/core/Profile.hpp"
 
+#include <QColor>
 #include <QWidget>
 #include <vector>
 
 namespace beam::ui {
 
-/// Lightweight 1D plot (profiles or D(z); no external chart dependency).
+struct PlotSeries {
+  std::vector<double> x;
+  std::vector<double> y;
+  QColor color = QColor(80, 200, 255);
+  Qt::PenStyle penStyle = Qt::SolidLine;
+  qreal penWidth = 1.5;
+  bool markers = false;
+  QString legend;
+};
+
+/// Lightweight multi-series 1D plot (profiles / dual-axis caustic; no chart lib).
 class ProfilePlot final : public QWidget {
   Q_OBJECT
  public:
@@ -21,6 +32,11 @@ class ProfilePlot final : public QWidget {
                  const QString& xLabel = QString(),
                  const QString& yLabel = QString());
   void setOverlaySeries(const std::vector<double>& x, const std::vector<double>& y);
+  /// Replace all series (measured + fits) for dual-axis caustic views.
+  void setMultiSeries(const std::vector<PlotSeries>& series,
+                      const QString& title,
+                      const QString& xLabel = QString(),
+                      const QString& yLabel = QString());
   void clearProfile();
 
  protected:
@@ -29,10 +45,7 @@ class ProfilePlot final : public QWidget {
   QSize minimumSizeHint() const override { return {200, 100}; }
 
  private:
-  std::vector<double> x_;
-  std::vector<double> y_;
-  std::vector<double> overlayX_;
-  std::vector<double> overlayY_;
+  std::vector<PlotSeries> series_;
   QString title_;
   QString xLabel_;
   QString yLabel_;

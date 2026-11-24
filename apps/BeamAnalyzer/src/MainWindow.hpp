@@ -104,12 +104,16 @@ class MainWindow final : public QMainWindow {
   void applyCameraControlsToUi(const beam::camera::CameraControls& c);
   void setCameraUiConnected(bool connected);
   void updateStatusBarDetails();
+  void updateMeasurementChrome();
 
   ImageView* imageView_ = nullptr;
   MetricsPanel* metricsPanel_ = nullptr;
   QDockWidget* metricsDock_ = nullptr;
   QLabel* statusLabel_ = nullptr;
   QLabel* statusMetricsBrief_ = nullptr;
+  QLabel* statusModeChip_ = nullptr;
+  QLabel* statusLiveChip_ = nullptr;
+  QLabel* imageChromeLabel_ = nullptr;
   QComboBox* colorMapBox_ = nullptr;
   QComboBox* backgroundBox_ = nullptr;
   QDoubleSpinBox* bgConstantSpin_ = nullptr;

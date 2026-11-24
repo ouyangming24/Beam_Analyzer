@@ -39,4 +39,9 @@ struct ExportMeta {
                                       const beam::core::M2ScanResult& result,
                                       const ExportMeta& meta = {});
 
+/// Dual-axis residual table: z, measured/fitted/Δ for X and Y.
+[[nodiscard]] bool exportM2ResidualsCsv(const std::string& path,
+                                        const beam::core::M2ScanResult& result,
+                                        const ExportMeta& meta = {});
+
 }  // namespace beam::io

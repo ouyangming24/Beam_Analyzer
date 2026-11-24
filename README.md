@@ -1,7 +1,10 @@
 # Beam Analyzer
 
-Windows 桌面光束分析工具（Qt6 / C++），方向对标 Cinogy 类 ISO 光束质量与功率/剖面测量。  
-**不宣称与 Cinogy 功能或 UI 像素级对等**；本仓库提供可扩展的离线/模拟采集分析工作台。
+Windows 桌面光束分析工具（Qt6 Widgets / C++），方向对标实验室 ISO 光束质量与功率/剖面测量工作台。  
+**不宣称与 Cinogy 或其他商业产品功能/UI 像素级对等**；本仓库提供可扩展的离线/模拟采集分析工作台。
+
+> **UI 灵感说明**：布局与测量工作流参考了常见实验室光束分析软件的交互习惯（更密的仪器面板、双轴 \(M^2\)/焦散、残差与报告导出等）。  
+> **不是** [BeamLab / laser-beam-analyzer](https://github.com/aruchid/laser-beam-analyzer) 的 fork，未复制其代码、资源或品牌；本项目保持 **Qt6 Widgets**（不使用 Electron）。
 
 | 阶段 | 状态 |
 |------|------|
@@ -9,7 +12,8 @@ Windows 桌面光束分析工具（Qt6 / C++），方向对标 Cinogy 类 ISO �
 | Phase 2 | 功率/ROI/剖面、M² 扫描 |
 | Phase 3 | 相机协议适配层（GenTL/UVC 桩 + Simulated 实时） |
 | Phase 4 | 商用级 UI 打磨、图像导入/导出、动态指标、最近文件/拖放 |
-| **Phase 5（当前）** | **鲁棒二阶矩/噪声、双曲线 \(M^2\)、电机粗扫→精扫、CLI、`docs/ALGORITHM.md`** |
+| Phase 5 | 鲁棒二阶矩/噪声、双曲线 \(M^2\)、电机粗扫→精扫、CLI、`docs/ALGORITHM.md` |
+| **Phase 6（当前）** | **仪器风工作站 UI：双轴焦散/残差、报告包导出、状态栏测量铬** |
 
 ## Phase 4 亮点
 
@@ -41,6 +45,11 @@ Windows 桌面光束分析工具（Qt6 / C++），方向对标 Cinogy 类 ISO �
 - GUI：M² 对话框内仿真扫描、`D(z)` 曲线、报告/CSV 导出
 - CLI：`beam_m2_scan`（无 Qt）运行仿真会话并导出报告
 - 方法说明与文献/标准引用：[`docs/ALGORITHM.md`](docs/ALGORITHM.md)
+
+### Phase 6 — 仪器风工作站 UI
+- 更密的面板间距、状态栏模式芯片（离线/分析/相机/LIVE）、强度图测量铬条
+- **M² 工作站**：双轴焦散 `Dx(z)` / `Dy(z)`、残差图+表、双轴摘要、报告包（Markdown+JSON+D(z)+残差 CSV）
+- 假彩色/剖面优先；未引入 Electron 或重量级 3D 预览
 
 ## 仓库结构
 
@@ -114,7 +123,7 @@ ctest --test-dir build-libs --output-on-failure
 4. 停止预览后拖动 **帧历史** 滑条回看
 5. **导出标注图像…** 保存假彩色 + 十字线/ROI/指标条
 6. 视图菜单可切换深色/浅色主题；指标坞可浮动/关闭
-7. **M² 扫描…**：配置粗扫/精扫 → 运行仿真扫描 → 查看 `D(z)` → 导出报告
+7. **M² 工作站…**：配置粗扫/精扫 → 仿真扫描 → 查看双轴焦散与残差 → **导出报告包**
 
 ### 截图说明（自行截取）
 
@@ -137,8 +146,8 @@ ctest --test-dir build-libs --output-on-failure
 
 | 阶段 | 内容 |
 |------|------|
-| Phase 1–4 | 已合入 main |
-| Phase 5 | \(M^2\) 拟合增强、电机粗扫/精扫、ALGORITHM.md |
+| Phase 1–5 | 已合入 main |
+| Phase 6 | 仪器风 UI、双轴焦散/残差、报告包 |
 | 后续 | 真机相机/电机联调、标定向导、更完整的序列/报告工作流 |
 
 ## 许可
