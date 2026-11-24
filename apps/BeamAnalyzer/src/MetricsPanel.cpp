@@ -18,19 +18,26 @@ QString num(double v, char fmt = 'f', int prec = 3) {
   return QString::number(v, fmt, prec);
 }
 
+QLabel* sectionHeader(const QString& text) {
+  auto* t = new QLabel(text);
+  t->setObjectName(QStringLiteral("SectionHeader"));
+  return t;
+}
+
 }  // namespace
 
 MetricsPanel::MetricsPanel(QWidget* parent) : QWidget(parent) {
   setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Expanding);
+  setObjectName(QStringLiteral("MetricsPanel"));
   auto* root = new QVBoxLayout(this);
-  root->setContentsMargins(8, 8, 8, 8);
-  root->setSpacing(6);
+  root->setContentsMargins(6, 6, 6, 6);
+  root->setSpacing(4);
 
   auto* form = new QFormLayout;
   form->setLabelAlignment(Qt::AlignRight);
   form->setFormAlignment(Qt::AlignTop);
-  form->setHorizontalSpacing(10);
-  form->setVerticalSpacing(4);
+  form->setHorizontalSpacing(8);
+  form->setVerticalSpacing(2);
   form->setFieldGrowthPolicy(QFormLayout::ExpandingFieldsGrow);
 
   sourceLabel_ = addRow(form, QStringLiteral("来源"));
@@ -41,13 +48,11 @@ MetricsPanel::MetricsPanel(QWidget* parent) : QWidget(parent) {
   root->addLayout(form);
   root->addWidget(sep1);
 
+  root->addWidget(sectionHeader(QStringLiteral("ISO 11146")));
   auto* iso = new QFormLayout;
   iso->setLabelAlignment(Qt::AlignRight);
-  iso->setHorizontalSpacing(10);
-  iso->setVerticalSpacing(4);
-  auto* isoTitle = new QLabel(QStringLiteral("ISO 11146"));
-  isoTitle->setStyleSheet(QStringLiteral("font-weight: 700; color: #7aa2ff;"));
-  root->addWidget(isoTitle);
+  iso->setHorizontalSpacing(8);
+  iso->setVerticalSpacing(2);
 
   totalPower_ = addRow(iso, QStringLiteral("总功率"));
   centroidX_ = addRow(iso, QStringLiteral("质心 X"));
@@ -64,13 +69,11 @@ MetricsPanel::MetricsPanel(QWidget* parent) : QWidget(parent) {
   sep2->setFrameShape(QFrame::HLine);
   root->addWidget(sep2);
 
-  auto* powTitle = new QLabel(QStringLiteral("功率 / 能量"));
-  powTitle->setStyleSheet(QStringLiteral("font-weight: 700; color: #7aa2ff;"));
-  root->addWidget(powTitle);
+  root->addWidget(sectionHeader(QStringLiteral("功率 / 能量")));
   auto* pow = new QFormLayout;
   pow->setLabelAlignment(Qt::AlignRight);
-  pow->setHorizontalSpacing(10);
-  pow->setVerticalSpacing(4);
+  pow->setHorizontalSpacing(8);
+  pow->setVerticalSpacing(2);
   sumCounts_ = addRow(pow, QStringLiteral("Σ counts"));
   peakCounts_ = addRow(pow, QStringLiteral("峰值"));
   meanCounts_ = addRow(pow, QStringLiteral("均值"));
@@ -82,10 +85,11 @@ MetricsPanel::MetricsPanel(QWidget* parent) : QWidget(parent) {
   sep3->setFrameShape(QFrame::HLine);
   root->addWidget(sep3);
 
+  root->addWidget(sectionHeader(QStringLiteral("测量上下文")));
   auto* ctx = new QFormLayout;
   ctx->setLabelAlignment(Qt::AlignRight);
-  ctx->setHorizontalSpacing(10);
-  ctx->setVerticalSpacing(4);
+  ctx->setHorizontalSpacing(8);
+  ctx->setVerticalSpacing(2);
   roiLabel_ = addRow(ctx, QStringLiteral("ROI"));
   crossLabel_ = addRow(ctx, QStringLiteral("十字线"));
   pixelSize_ = addRow(ctx, QStringLiteral("像素尺寸"));
@@ -98,12 +102,10 @@ MetricsPanel::MetricsPanel(QWidget* parent) : QWidget(parent) {
 
 QLabel* MetricsPanel::addRow(QFormLayout* form, const QString& name) {
   auto* value = new QLabel(QStringLiteral("—"));
+  value->setObjectName(QStringLiteral("MetricValue"));
   value->setTextInteractionFlags(Qt::TextSelectableByMouse);
   value->setWordWrap(true);
   value->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Preferred);
-  value->setStyleSheet(QStringLiteral(
-      "font-family: \"Cascadia Mono\", \"Consolas\", \"Sarasa Mono SC\", monospace;"
-      "font-size: 12px; font-weight: 600;"));
   form->addRow(name, value);
   return value;
 }
@@ -143,7 +145,7 @@ void MetricsPanel::setLive(bool live, double fpsHint) {
     } else {
       liveLabel_->setText(QStringLiteral("● LIVE"));
     }
-    liveLabel_->setStyleSheet(QStringLiteral("color: #3dd68c; font-weight: 700;"));
+    liveLabel_->setStyleSheet(QStringLiteral("color: #34d399; font-weight: 700;"));
   } else {
     liveLabel_->setText(QStringLiteral("静止 / 离线"));
     liveLabel_->setStyleSheet(QStringLiteral("font-weight: 600;"));

@@ -180,7 +180,8 @@ void MainWindow::rebuildUi() {
   connect(roiModeAction_, &QAction::toggled, this, &MainWindow::onRoiModeToggled);
   tool->addAction(QStringLiteral("清除 ROI"), this, &MainWindow::onClearRoi);
   tool->addSeparator();
-  tool->addAction(QStringLiteral("M² 扫描…"), this, &MainWindow::openM2Scan);
+  auto* m2Act = tool->addAction(QStringLiteral("M² 工作站…"), this, &MainWindow::openM2Scan);
+  m2Act->setObjectName(QStringLiteral("PrimaryAction"));
   tool->addSeparator();
   tool->addWidget(new QLabel(QStringLiteral(" 色图 ")));
   colorMapBox_ = new QComboBox;
@@ -209,6 +210,18 @@ void MainWindow::rebuildUi() {
   leftSplit->setObjectName(QStringLiteral("LeftSplitter"));
   leftSplit->setChildrenCollapsible(false);
   leftSplit->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
+
+  auto* imageChrome = new QWidget;
+  imageChrome->setObjectName(QStringLiteral("ImageChrome"));
+  imageChrome->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
+  auto* chromeLay = new QHBoxLayout(imageChrome);
+  chromeLay->setContentsMargins(8, 3, 8, 3);
+  chromeLay->setSpacing(8);
+  imageChromeLabel_ = new QLabel(QStringLiteral("强度图 · 假彩色 / 十字线剖面 · 无帧"));
+  imageChromeLabel_->setObjectName(QStringLiteral("SectionHeader"));
+  chromeLay->addWidget(imageChromeLabel_, 1);
+  leftSplit->addWidget(imageChrome);
+
   imageView_ = new ImageView;
   connect(imageView_, &ImageView::roiChanged, this, &MainWindow::onRoiChanged);
   connect(imageView_, &ImageView::crosshairChanged, this, &MainWindow::onCrosshairChanged);
@@ -224,9 +237,11 @@ void MainWindow::rebuildUi() {
   leftSplit->addWidget(scroll);
 
   auto* scrubRow = new QWidget;
+  scrubRow->setObjectName(QStringLiteral("ImageChrome"));
   scrubRow->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
   auto* scrubLayout = new QHBoxLayout(scrubRow);
-  scrubLayout->setContentsMargins(6, 2, 6, 2);
+  scrubLayout->setContentsMargins(8, 2, 8, 2);
+  scrubLayout->setSpacing(6);
   scrubLayout->addWidget(new QLabel(QStringLiteral("帧历史")));
   frameScrubber_ = new QSlider(Qt::Horizontal);
   frameScrubber_->setEnabled(false);
@@ -242,6 +257,7 @@ void MainWindow::rebuildUi() {
   profiles->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Preferred);
   auto* profilesLayout = new QHBoxLayout(profiles);
   profilesLayout->setContentsMargins(0, 0, 0, 0);
+  profilesLayout->setSpacing(2);
   hProfilePlot_ = new ProfilePlot;
   vProfilePlot_ = new ProfilePlot;
   hProfilePlot_->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
@@ -249,9 +265,10 @@ void MainWindow::rebuildUi() {
   profilesLayout->addWidget(hProfilePlot_, 1);
   profilesLayout->addWidget(vProfilePlot_, 1);
   leftSplit->addWidget(profiles);
-  leftSplit->setStretchFactor(0, 5);
-  leftSplit->setStretchFactor(1, 0);
-  leftSplit->setStretchFactor(2, 1);
+  leftSplit->setStretchFactor(0, 0);
+  leftSplit->setStretchFactor(1, 5);
+  leftSplit->setStretchFactor(2, 0);
+  leftSplit->setStretchFactor(3, 1);
   mainSplit->addWidget(leftSplit);
 
   auto* right = new QWidget;
@@ -260,13 +277,23 @@ void MainWindow::rebuildUi() {
   right->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Expanding);
   right->setMinimumWidth(260);
   right->setMaximumWidth(440);
-  auto* rightLayout = new QVBoxLayout(right);
+  auto* rightOuter = new QVBoxLayout(right);
+  rightOuter->setContentsMargins(0, 0, 0, 0);
+  rightOuter->setSpacing(0);
+  auto* rightScroll = new QScrollArea;
+  rightScroll->setWidgetResizable(true);
+  rightScroll->setFrameShape(QFrame::NoFrame);
+  rightScroll->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+  auto* rightInner = new QWidget;
+  rightInner->setObjectName(QStringLiteral("ControlColumn"));
+  auto* rightLayout = new QVBoxLayout(rightInner);
   rightLayout->setContentsMargins(6, 6, 6, 6);
-  rightLayout->setSpacing(8);
+  rightLayout->setSpacing(6);
 
   auto* camBox = new QGroupBox(QStringLiteral("相机采集"));
   auto* camForm = new QFormLayout(camBox);
-  camForm->setSpacing(6);
+  camForm->setSpacing(4);
+  camForm->setContentsMargins(8, 12, 8, 6);
 
   cameraSourceBox_ = new QComboBox;
   camForm->addRow(QStringLiteral("源"), cameraSourceBox_);
@@ -335,7 +362,8 @@ void MainWindow::rebuildUi() {
 
   auto* toolsBox = new QGroupBox(QStringLiteral("分析工具"));
   auto* toolsForm = new QFormLayout(toolsBox);
-  toolsForm->setSpacing(6);
+  toolsForm->setSpacing(4);
+  toolsForm->setContentsMargins(8, 12, 8, 6);
 
   useRoiCheck_ = new QCheckBox(QStringLiteral("启用 ROI"));
   connect(useRoiCheck_, &QCheckBox::toggled, this, [this](bool) { onRecompute(); });
@@ -405,6 +433,8 @@ void MainWindow::rebuildUi() {
   hint->setStyleSheet(QStringLiteral("color: #8892a4; font-size: 11px;"));
   rightLayout->addWidget(hint);
   rightLayout->addStretch(1);
+  rightScroll->setWidget(rightInner);
+  rightOuter->addWidget(rightScroll, 1);
 
   mainSplit->addWidget(right);
   // Image/profile column takes all extra width; control column stays near preferred size.
@@ -428,12 +458,20 @@ void MainWindow::rebuildUi() {
   resizeDocks({metricsDock_}, {300}, Qt::Horizontal);
   viewMenu->addAction(metricsDock_->toggleViewAction());
 
-  statusLabel_ = new QLabel(QStringLiteral("就绪"));
+  statusModeChip_ = new QLabel(QStringLiteral("离线"));
+  statusModeChip_->setObjectName(QStringLiteral("StatusModeChip"));
+  statusLiveChip_ = new QLabel(QStringLiteral("IDLE"));
+  statusLiveChip_->setObjectName(QStringLiteral("StatusLiveChip"));
+  statusLiveChip_->setVisible(false);
+  statusLabel_ = new QLabel(QStringLiteral("就绪 — 打开帧或连接模拟相机开始测量"));
   statusMetricsBrief_ = new QLabel(QStringLiteral("—"));
+  statusBar()->addWidget(statusModeChip_);
+  statusBar()->addWidget(statusLiveChip_);
   statusBar()->addWidget(statusLabel_, 2);
   statusBar()->addPermanentWidget(statusMetricsBrief_, 1);
 
   setCameraUiConnected(false);
+  updateMeasurementChrome();
 }
 
 void MainWindow::rebuildRecentMenu() {
@@ -967,6 +1005,7 @@ void MainWindow::refreshMetricsPanel() {
 }
 
 void MainWindow::updateStatusBarDetails() {
+  updateMeasurementChrome();
   if (!metrics_ || !metrics_->valid) {
     statusMetricsBrief_->setText(QStringLiteral("指标: —"));
     return;
@@ -977,6 +1016,43 @@ void MainWindow::updateStatusBarDetails() {
           .arg(fmt(metrics_->centroidY_um, 4))
           .arg(fmt(metrics_->diameterX_um, 4))
           .arg(fmt(metrics_->diameterY_um, 4)));
+}
+
+void MainWindow::updateMeasurementChrome() {
+  const bool hasFrame = rawFrame_.has_value();
+  const bool camOpen = activeCamera_ && activeCamera_->isOpen();
+  if (liveActive_) {
+    statusModeChip_->setText(QStringLiteral("采集"));
+    statusLiveChip_->setVisible(true);
+    statusLiveChip_->setText(QStringLiteral("LIVE"));
+  } else if (camOpen) {
+    statusModeChip_->setText(QStringLiteral("相机"));
+    statusLiveChip_->setVisible(false);
+  } else if (hasFrame) {
+    statusModeChip_->setText(QStringLiteral("分析"));
+    statusLiveChip_->setVisible(false);
+  } else {
+    statusModeChip_->setText(QStringLiteral("离线"));
+    statusLiveChip_->setVisible(false);
+  }
+
+  if (imageChromeLabel_) {
+    const QString cmap =
+        (colorMap_ == ColorMap::Grayscale) ? QStringLiteral("灰度") : QStringLiteral("假彩色");
+    if (!hasFrame) {
+      imageChromeLabel_->setText(
+          QStringLiteral("强度图 · %1 · 十字线剖面 · 无帧").arg(cmap));
+    } else {
+      imageChromeLabel_->setText(
+          QStringLiteral("强度图 · %1 · %2×%3 · 十字 (%4,%5) · %6")
+              .arg(cmap)
+              .arg(rawFrame_->width)
+              .arg(rawFrame_->height)
+              .arg(crossX_)
+              .arg(crossY_)
+              .arg(sourcePath_));
+    }
+  }
 }
 
 bool MainWindow::ensureMetrics() const {
@@ -1137,6 +1213,7 @@ void MainWindow::exportVProfile() {
 void MainWindow::onColorMapChanged(int index) {
   colorMap_ = static_cast<ColorMap>(colorMapBox_->itemData(index).toInt());
   refreshImage();
+  updateMeasurementChrome();
 }
 
 void MainWindow::onRoiModeToggled(bool on) {
@@ -1169,6 +1246,7 @@ void MainWindow::onCrosshairChanged(int x, int y) {
   crossY_ = y;
   refreshProfiles();
   refreshMetricsPanel();
+  updateMeasurementChrome();
 }
 
 void MainWindow::onBackgroundModeChanged(int) {

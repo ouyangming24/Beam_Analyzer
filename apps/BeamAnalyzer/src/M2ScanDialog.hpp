@@ -11,12 +11,13 @@ class QTableWidget;
 class QLabel;
 class QLineEdit;
 class QCheckBox;
+class QTabWidget;
 
 namespace beam::ui {
 
 class ProfilePlot;
 
-/// Multi-point M² scan: manual points, coarse→fine motor plan, fit, D(z), export.
+/// Multi-point M² workstation: dual-axis caustic, residuals, coarse→fine, report export.
 class M2ScanDialog final : public QDialog {
   Q_OBJECT
  public:
@@ -40,10 +41,15 @@ class M2ScanDialog final : public QDialog {
   void exportMarkdown();
   void exportJson();
   void exportDzCsv();
+  void exportResidualsCsv();
+  void exportReportBundle();
 
  private:
   void refreshTable();
-  void updateDzPlot();
+  void updateDzPlots();
+  void refreshResidualTable();
+  void updateResultSummary();
+  [[nodiscard]] bool ensureFit();
   [[nodiscard]] std::vector<beam::core::M2ScanPoint> collectPoints() const;
   [[nodiscard]] beam::core::ScanSessionConfig sessionConfig() const;
 
@@ -63,8 +69,16 @@ class M2ScanDialog final : public QDialog {
   QDoubleSpinBox* synthD0Spin_ = nullptr;
 
   QTableWidget* table_ = nullptr;
+  QTableWidget* residualTable_ = nullptr;
   QLabel* resultLabel_ = nullptr;
-  ProfilePlot* dzPlot_ = nullptr;
+  QLabel* summaryMx_ = nullptr;
+  QLabel* summaryMy_ = nullptr;
+  QLabel* summaryComb_ = nullptr;
+  QLabel* workflowLabel_ = nullptr;
+  ProfilePlot* dzPlotX_ = nullptr;
+  ProfilePlot* dzPlotY_ = nullptr;
+  ProfilePlot* residualPlot_ = nullptr;
+  QTabWidget* viewTabs_ = nullptr;
 
   std::vector<beam::core::M2ScanPoint> points_;
   beam::core::M2ScanResult lastResult_;

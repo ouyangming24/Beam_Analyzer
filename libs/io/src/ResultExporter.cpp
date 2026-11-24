@@ -226,4 +226,41 @@ bool exportM2ReportJson(const std::string& path,
   return static_cast<bool>(out);
 }
 
+bool exportM2ResidualsCsv(const std::string& path,
+                          const beam::core::M2ScanResult& result,
+                          const ExportMeta& meta) {
+  std::ofstream out(path);
+  if (!out) {
+    return false;
+  }
+  out << std::setprecision(10);
+  out << "# source=" << meta.sourcePath << "\n";
+  out << "# note=" << meta.note << "\n";
+  out << "z_mm,measured_x_um,fitted_x_um,residual_x_um,"
+         "measured_y_um,fitted_y_um,residual_y_um\n";
+
+  const auto& rx = result.fitX.residuals;
+  const auto& ry = result.fitY.residuals;
+  const std::size_t n = std::max(rx.size(), ry.size());
+  for (std::size_t i = 0; i < n; ++i) {
+    const bool hasX = i < rx.size();
+    const bool hasY = i < ry.size();
+    const double z = hasX ? rx[i].z_mm : (hasY ? ry[i].z_mm : 0.0);
+    out << z << ",";
+    if (hasX) {
+      out << rx[i].measured_um << "," << rx[i].fitted_um << "," << rx[i].residual_um;
+    } else {
+      out << ",,";
+    }
+    out << ",";
+    if (hasY) {
+      out << ry[i].measured_um << "," << ry[i].fitted_um << "," << ry[i].residual_um;
+    } else {
+      out << ",,";
+    }
+    out << "\n";
+  }
+  return static_cast<bool>(out);
+}
+
 }  // namespace beam::io

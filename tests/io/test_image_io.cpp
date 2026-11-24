@@ -1,10 +1,13 @@
 #include "beam/core/Iso11146.hpp"
+#include "beam/core/M2Scan.hpp"
 #include "beam/io/ImageExporter.hpp"
 #include "beam/io/ImageImporter.hpp"
+#include "beam/io/ResultExporter.hpp"
 
 #include <cmath>
 #include <cstdio>
 #include <filesystem>
+#include <fstream>
 #include <iostream>
 #include <string>
 
@@ -99,6 +102,38 @@ int main() {
   // Save 8-bit style via exporter then ensure annotated path works for empty metrics
   CHECK(beam::io::exportAnnotatedBmp(grayBmpPath, frame, nullptr, opt));
   CHECK(fs::exists(grayBmpPath));
+
+  // Dual-axis residual CSV export (Phase 6 report UX)
+  {
+    std::vector<beam::core::M2ScanPoint> pts;
+    for (int i = 0; i < 7; ++i) {
+      beam::core::M2ScanPoint p;
+      p.z_mm = -30.0 + 10.0 * i;
+      const double d =
+          beam::core::hyperbolicDiameter_um(p.z_mm, 100.0, 0.0, 1.2, 1064.0);
+      p.diameterX_um = d;
+      p.diameterY_um = d * 1.05;
+      p.valid = true;
+      p.sourceLabel = "test";
+      pts.push_back(p);
+    }
+    const auto scan = beam::core::analyzeM2Scan(pts, 1064.0);
+    CHECK(scan.valid);
+    const std::string resPath = (tmpDir / "m2_residuals.csv").string();
+    beam::io::ExportMeta meta;
+    meta.note = "unit-test";
+    CHECK(beam::io::exportM2ResidualsCsv(resPath, scan, meta));
+    CHECK(fs::exists(resPath));
+    std::ifstream in(resPath);
+    std::string header;
+    std::getline(in, header);
+    // skip comment lines
+    while (!header.empty() && header[0] == '#') {
+      std::getline(in, header);
+    }
+    CHECK(header.find("residual_x_um") != std::string::npos);
+    CHECK(header.find("residual_y_um") != std::string::npos);
+  }
 
   std::cout << (failures == 0 ? "image_io OK\n" : "image_io FAILED\n");
   return failures == 0 ? 0 : 1;

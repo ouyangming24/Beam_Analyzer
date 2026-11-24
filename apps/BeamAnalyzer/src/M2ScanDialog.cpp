@@ -16,6 +16,8 @@
 #include <QLineEdit>
 #include <QMessageBox>
 #include <QPushButton>
+#include <QSplitter>
+#include <QTabWidget>
 #include <QTableWidget>
 #include <QVBoxLayout>
 
@@ -25,14 +27,60 @@
 #include <functional>
 
 namespace beam::ui {
+namespace {
+
+std::vector<double> fitCurveZ(const std::vector<double>& zSamples) {
+  if (zSamples.size() < 2) {
+    return {};
+  }
+  const double z0 = *std::min_element(zSamples.begin(), zSamples.end());
+  const double z1 = *std::max_element(zSamples.begin(), zSamples.end());
+  std::vector<double> fz;
+  constexpr int n = 96;
+  fz.reserve(n);
+  for (int i = 0; i < n; ++i) {
+    fz.push_back(z0 + (z1 - z0) * static_cast<double>(i) / (n - 1));
+  }
+  return fz;
+}
+
+QString fmtG(double v, int digits = 4) {
+  if (!std::isfinite(v)) {
+    return QStringLiteral("—");
+  }
+  return QString::number(v, 'g', digits);
+}
+
+}  // namespace
 
 M2ScanDialog::M2ScanDialog(QWidget* parent) : QDialog(parent) {
-  setWindowTitle(QStringLiteral("M² 扫描 / 电机粗扫→精扫"));
-  resize(860, 720);
+  setWindowTitle(QStringLiteral("M² 工作站 — 双轴焦散 / 残差 / 报告"));
+  resize(1100, 780);
+  setMinimumSize(900, 640);
 
   auto* root = new QVBoxLayout(this);
+  root->setContentsMargins(8, 8, 8, 8);
+  root->setSpacing(6);
 
-  auto* form = new QFormLayout;
+  workflowLabel_ = new QLabel(
+      QStringLiteral("工作流：① 配置波长与粗/精扫 → ② 添加测点或运行仿真 → ③ 拟合 → ④ 导出报告"));
+  workflowLabel_->setObjectName(QStringLiteral("SectionHeader"));
+  workflowLabel_->setWordWrap(true);
+  root->addWidget(workflowLabel_);
+
+  auto* mainSplit = new QSplitter(Qt::Horizontal);
+  mainSplit->setChildrenCollapsible(false);
+
+  // —— Left: config + points ——
+  auto* left = new QWidget;
+  auto* leftLayout = new QVBoxLayout(left);
+  leftLayout->setContentsMargins(0, 0, 0, 0);
+  leftLayout->setSpacing(6);
+
+  auto* formBox = new QGroupBox(QStringLiteral("测点输入"));
+  auto* form = new QFormLayout(formBox);
+  form->setSpacing(4);
+  form->setContentsMargins(8, 12, 8, 6);
   wavelengthSpin_ = new QDoubleSpinBox;
   wavelengthSpin_->setRange(1.0, 1e6);
   wavelengthSpin_->setDecimals(3);
@@ -63,10 +111,12 @@ M2ScanDialog::M2ScanDialog(QWidget* parent) : QDialog(parent) {
   sourceEdit_ = new QLineEdit;
   sourceEdit_->setPlaceholderText(QStringLiteral("来源标签（可选）"));
   form->addRow(QStringLiteral("来源"), sourceEdit_);
-  root->addLayout(form);
+  leftLayout->addWidget(formBox);
 
-  auto* motorBox = new QGroupBox(QStringLiteral("电机扫描规划（粗扫 → 精扫）"));
+  auto* motorBox = new QGroupBox(QStringLiteral("电机规划（粗扫 → 精扫）"));
   auto* motorForm = new QFormLayout(motorBox);
+  motorForm->setSpacing(4);
+  motorForm->setContentsMargins(8, 12, 8, 6);
   coarseStartSpin_ = new QDoubleSpinBox;
   coarseStartSpin_->setRange(-1e6, 1e6);
   coarseStartSpin_->setDecimals(3);
@@ -118,23 +168,24 @@ M2ScanDialog::M2ScanDialog(QWidget* parent) : QDialog(parent) {
   synthD0Spin_->setSuffix(QStringLiteral(" µm"));
   synthD0Spin_->setValue(100.0);
   motorForm->addRow(QStringLiteral("仿真腰斑直径"), synthD0Spin_);
-  root->addWidget(motorBox);
+  leftLayout->addWidget(motorBox);
 
   auto* row = new QHBoxLayout;
+  row->setSpacing(4);
   auto* addBtn = new QPushButton(QStringLiteral("添加测点"));
-  auto* seedBtn = new QPushButton(QStringLiteral("用当前帧束宽"));
-  auto* removeBtn = new QPushButton(QStringLiteral("删除选中"));
+  auto* seedBtn = new QPushButton(QStringLiteral("用当前帧"));
+  auto* removeBtn = new QPushButton(QStringLiteral("删除"));
   auto* clearBtn = new QPushButton(QStringLiteral("清空"));
-  auto* planBtn = new QPushButton(QStringLiteral("生成位置列表"));
-  auto* simBtn = new QPushButton(QStringLiteral("运行仿真扫描"));
+  auto* planBtn = new QPushButton(QStringLiteral("位置列表"));
+  auto* simBtn = new QPushButton(QStringLiteral("仿真扫描"));
+  simBtn->setObjectName(QStringLiteral("AccentButton"));
   row->addWidget(addBtn);
   row->addWidget(seedBtn);
   row->addWidget(removeBtn);
   row->addWidget(clearBtn);
   row->addWidget(planBtn);
   row->addWidget(simBtn);
-  row->addStretch();
-  root->addLayout(row);
+  leftLayout->addLayout(row);
 
   table_ = new QTableWidget(0, 5);
   table_->setHorizontalHeaderLabels(
@@ -143,29 +194,114 @@ M2ScanDialog::M2ScanDialog(QWidget* parent) : QDialog(parent) {
   table_->horizontalHeader()->setStretchLastSection(true);
   table_->setSelectionBehavior(QAbstractItemView::SelectRows);
   table_->setSelectionMode(QAbstractItemView::ExtendedSelection);
-  root->addWidget(table_, 1);
+  table_->setAlternatingRowColors(true);
+  table_->verticalHeader()->setVisible(false);
+  table_->setMinimumHeight(140);
+  leftLayout->addWidget(table_, 1);
 
-  dzPlot_ = new ProfilePlot;
-  dzPlot_->setMinimumHeight(160);
-  root->addWidget(dzPlot_);
+  mainSplit->addWidget(left);
 
-  auto* fitRow = new QHBoxLayout;
-  auto* fitBtn = new QPushButton(QStringLiteral("拟合 M²"));
-  auto* mdBtn = new QPushButton(QStringLiteral("导出报告 Markdown…"));
-  auto* jsonBtn = new QPushButton(QStringLiteral("导出报告 JSON…"));
-  auto* csvBtn = new QPushButton(QStringLiteral("导出 D(z) CSV…"));
-  fitRow->addWidget(fitBtn);
-  fitRow->addWidget(mdBtn);
-  fitRow->addWidget(jsonBtn);
-  fitRow->addWidget(csvBtn);
-  fitRow->addStretch();
-  root->addLayout(fitRow);
+  // —— Right: dual caustic / residuals / summary ——
+  auto* right = new QWidget;
+  auto* rightLayout = new QVBoxLayout(right);
+  rightLayout->setContentsMargins(0, 0, 0, 0);
+  rightLayout->setSpacing(6);
 
+  auto* summaryBox = new QGroupBox(QStringLiteral("双轴 M² 摘要"));
+  auto* summaryLay = new QHBoxLayout(summaryBox);
+  summaryLay->setSpacing(12);
+  auto makeSummary = [](const QString& title) {
+    auto* col = new QVBoxLayout;
+    auto* t = new QLabel(title);
+    t->setObjectName(QStringLiteral("SectionHeader"));
+    auto* v = new QLabel(QStringLiteral("—"));
+    v->setObjectName(QStringLiteral("MetricValue"));
+    v->setTextInteractionFlags(Qt::TextSelectableByMouse);
+    v->setWordWrap(true);
+    col->addWidget(t);
+    col->addWidget(v);
+    col->addStretch(1);
+    auto* w = new QWidget;
+    w->setLayout(col);
+    return std::pair<QWidget*, QLabel*>{w, v};
+  };
+  auto sx = makeSummary(QStringLiteral("M²_X / 腰斑"));
+  auto sy = makeSummary(QStringLiteral("M²_Y / 腰斑"));
+  auto sc = makeSummary(QStringLiteral("合成 / 质量"));
+  summaryMx_ = sx.second;
+  summaryMy_ = sy.second;
+  summaryComb_ = sc.second;
+  summaryLay->addWidget(sx.first, 1);
+  summaryLay->addWidget(sy.first, 1);
+  summaryLay->addWidget(sc.first, 1);
+  rightLayout->addWidget(summaryBox);
+
+  viewTabs_ = new QTabWidget;
+  auto* causticPage = new QWidget;
+  auto* causticLay = new QVBoxLayout(causticPage);
+  causticLay->setContentsMargins(4, 4, 4, 4);
+  causticLay->setSpacing(4);
+  dzPlotX_ = new ProfilePlot;
+  dzPlotY_ = new ProfilePlot;
+  dzPlotX_->setMinimumHeight(150);
+  dzPlotY_->setMinimumHeight(150);
+  causticLay->addWidget(dzPlotX_, 1);
+  causticLay->addWidget(dzPlotY_, 1);
+  viewTabs_->addTab(causticPage, QStringLiteral("双轴焦散 D(z)"));
+
+  auto* residualPage = new QWidget;
+  auto* residualLay = new QVBoxLayout(residualPage);
+  residualLay->setContentsMargins(4, 4, 4, 4);
+  residualLay->setSpacing(4);
+  residualPlot_ = new ProfilePlot;
+  residualPlot_->setMinimumHeight(120);
+  residualLay->addWidget(residualPlot_, 1);
+  residualTable_ = new QTableWidget(0, 7);
+  residualTable_->setHorizontalHeaderLabels(
+      {QStringLiteral("z (mm)"), QStringLiteral("Dx 测"), QStringLiteral("Dx 拟合"),
+       QStringLiteral("Δx"), QStringLiteral("Dy 测"), QStringLiteral("Dy 拟合"),
+       QStringLiteral("Δy")});
+  residualTable_->horizontalHeader()->setStretchLastSection(true);
+  residualTable_->setAlternatingRowColors(true);
+  residualTable_->verticalHeader()->setVisible(false);
+  residualTable_->setMinimumHeight(120);
+  residualLay->addWidget(residualTable_, 1);
+  viewTabs_->addTab(residualPage, QStringLiteral("残差"));
+
+  auto* detailPage = new QWidget;
+  auto* detailLay = new QVBoxLayout(detailPage);
   resultLabel_ = new QLabel(
       QStringLiteral("添加 ≥3 个轴向测点，或配置粗/精扫后运行仿真扫描。详见 docs/ALGORITHM.md。"));
   resultLabel_->setWordWrap(true);
   resultLabel_->setTextInteractionFlags(Qt::TextSelectableByMouse);
-  root->addWidget(resultLabel_);
+  resultLabel_->setAlignment(Qt::AlignTop | Qt::AlignLeft);
+  detailLay->addWidget(resultLabel_, 1);
+  viewTabs_->addTab(detailPage, QStringLiteral("详细结果"));
+  rightLayout->addWidget(viewTabs_, 1);
+
+  auto* fitRow = new QHBoxLayout;
+  fitRow->setSpacing(4);
+  auto* fitBtn = new QPushButton(QStringLiteral("拟合 M²"));
+  fitBtn->setObjectName(QStringLiteral("AccentButton"));
+  auto* mdBtn = new QPushButton(QStringLiteral("Markdown…"));
+  auto* jsonBtn = new QPushButton(QStringLiteral("JSON…"));
+  auto* csvBtn = new QPushButton(QStringLiteral("D(z) CSV…"));
+  auto* resCsvBtn = new QPushButton(QStringLiteral("残差 CSV…"));
+  auto* bundleBtn = new QPushButton(QStringLiteral("导出报告包…"));
+  fitRow->addWidget(fitBtn);
+  fitRow->addWidget(mdBtn);
+  fitRow->addWidget(jsonBtn);
+  fitRow->addWidget(csvBtn);
+  fitRow->addWidget(resCsvBtn);
+  fitRow->addWidget(bundleBtn);
+  fitRow->addStretch();
+  rightLayout->addLayout(fitRow);
+
+  mainSplit->addWidget(right);
+  mainSplit->setStretchFactor(0, 2);
+  mainSplit->setStretchFactor(1, 3);
+  mainSplit->setSizes({420, 640});
+  root->addWidget(mainSplit, 1);
 
   auto* buttons = new QDialogButtonBox(QDialogButtonBox::Close);
   connect(buttons, &QDialogButtonBox::rejected, this, &QDialog::reject);
@@ -182,6 +318,8 @@ M2ScanDialog::M2ScanDialog(QWidget* parent) : QDialog(parent) {
   connect(mdBtn, &QPushButton::clicked, this, &M2ScanDialog::exportMarkdown);
   connect(jsonBtn, &QPushButton::clicked, this, &M2ScanDialog::exportJson);
   connect(csvBtn, &QPushButton::clicked, this, &M2ScanDialog::exportDzCsv);
+  connect(resCsvBtn, &QPushButton::clicked, this, &M2ScanDialog::exportResidualsCsv);
+  connect(bundleBtn, &QPushButton::clicked, this, &M2ScanDialog::exportReportBundle);
 }
 
 void M2ScanDialog::setDefaultWavelength(double nm) {
@@ -226,33 +364,184 @@ void M2ScanDialog::refreshTable() {
   }
 }
 
-void M2ScanDialog::updateDzPlot() {
+void M2ScanDialog::updateDzPlots() {
+  const auto& pts = lastResult_.points.empty() ? points_ : lastResult_.points;
   std::vector<double> z;
-  std::vector<double> d;
-  for (const auto& p : lastResult_.points.empty() ? points_ : lastResult_.points) {
+  std::vector<double> dx;
+  std::vector<double> dy;
+  for (const auto& p : pts) {
     if (!p.valid) {
       continue;
     }
     z.push_back(p.z_mm);
-    d.push_back(std::sqrt(0.5 * (p.diameterX_um * p.diameterX_um + p.diameterY_um * p.diameterY_um)));
+    dx.push_back(p.diameterX_um);
+    dy.push_back(p.diameterY_um);
   }
-  dzPlot_->setSeries(z, d, QStringLiteral("D(z) 合成直径"), QStringLiteral("mm"),
-                     QStringLiteral("µm"));
-  if (lastResult_.fitCombined.valid && z.size() >= 2) {
-    const double z0 = *std::min_element(z.begin(), z.end());
-    const double z1 = *std::max_element(z.begin(), z.end());
-    std::vector<double> fz;
-    std::vector<double> fd;
-    constexpr int n = 80;
-    for (int i = 0; i < n; ++i) {
-      const double zz = z0 + (z1 - z0) * static_cast<double>(i) / (n - 1);
-      fz.push_back(zz);
-      fd.push_back(beam::core::hyperbolicDiameter_um(
-          zz, lastResult_.fitCombined.waistDiameter_um, lastResult_.fitCombined.waistZ_mm,
-          lastResult_.fitCombined.m2, lastResult_.wavelength_nm));
+
+  std::vector<PlotSeries> sx;
+  std::vector<PlotSeries> sy;
+  if (z.size() >= 2) {
+    PlotSeries mx;
+    mx.x = z;
+    mx.y = dx;
+    mx.color = QColor(64, 196, 255);
+    mx.markers = true;
+    mx.penWidth = 1.5;
+    mx.legend = QStringLiteral("Dx 测");
+    sx.push_back(mx);
+
+    PlotSeries my;
+    my.x = z;
+    my.y = dy;
+    my.color = QColor(120, 220, 140);
+    my.markers = true;
+    my.penWidth = 1.5;
+    my.legend = QStringLiteral("Dy 测");
+    sy.push_back(my);
+
+    const auto fz = fitCurveZ(z);
+    if (lastResult_.fitX.valid && !fz.empty()) {
+      PlotSeries fx;
+      fx.x = fz;
+      fx.y.reserve(fz.size());
+      for (double zz : fz) {
+        fx.y.push_back(beam::core::hyperbolicDiameter_um(
+            zz, lastResult_.fitX.waistDiameter_um, lastResult_.fitX.waistZ_mm,
+            lastResult_.fitX.m2, lastResult_.wavelength_nm));
+      }
+      fx.color = QColor(255, 176, 64);
+      fx.penStyle = Qt::DashLine;
+      fx.penWidth = 1.4;
+      fx.legend = QStringLiteral("Dx 拟合");
+      sx.push_back(std::move(fx));
     }
-    dzPlot_->setOverlaySeries(fz, fd);
+    if (lastResult_.fitY.valid && !fz.empty()) {
+      PlotSeries fy;
+      fy.x = fz;
+      fy.y.reserve(fz.size());
+      for (double zz : fz) {
+        fy.y.push_back(beam::core::hyperbolicDiameter_um(
+            zz, lastResult_.fitY.waistDiameter_um, lastResult_.fitY.waistZ_mm,
+            lastResult_.fitY.m2, lastResult_.wavelength_nm));
+      }
+      fy.color = QColor(255, 120, 160);
+      fy.penStyle = Qt::DashLine;
+      fy.penWidth = 1.4;
+      fy.legend = QStringLiteral("Dy 拟合");
+      sy.push_back(std::move(fy));
+    }
   }
+
+  dzPlotX_->setMultiSeries(sx, QStringLiteral("焦散 X — Dx(z)"), QStringLiteral("mm"),
+                           QStringLiteral("µm"));
+  dzPlotY_->setMultiSeries(sy, QStringLiteral("焦散 Y — Dy(z)"), QStringLiteral("mm"),
+                           QStringLiteral("µm"));
+  refreshResidualTable();
+}
+
+void M2ScanDialog::refreshResidualTable() {
+  std::vector<PlotSeries> resSeries;
+  residualTable_->setRowCount(0);
+
+  const auto& rx = lastResult_.fitX.residuals;
+  const auto& ry = lastResult_.fitY.residuals;
+  const std::size_t n = std::max(rx.size(), ry.size());
+  if (n == 0) {
+    residualPlot_->clearProfile();
+    return;
+  }
+
+  residualTable_->setRowCount(static_cast<int>(n));
+  std::vector<double> zx;
+  std::vector<double> resX;
+  std::vector<double> zy;
+  std::vector<double> resY;
+
+  for (std::size_t i = 0; i < n; ++i) {
+    const bool hasX = i < rx.size();
+    const bool hasY = i < ry.size();
+    const double z = hasX ? rx[i].z_mm : (hasY ? ry[i].z_mm : 0.0);
+    residualTable_->setItem(static_cast<int>(i), 0,
+                            new QTableWidgetItem(QString::number(z, 'g', 6)));
+    if (hasX) {
+      residualTable_->setItem(static_cast<int>(i), 1,
+                              new QTableWidgetItem(fmtG(rx[i].measured_um)));
+      residualTable_->setItem(static_cast<int>(i), 2,
+                              new QTableWidgetItem(fmtG(rx[i].fitted_um)));
+      residualTable_->setItem(static_cast<int>(i), 3,
+                              new QTableWidgetItem(fmtG(rx[i].residual_um)));
+      zx.push_back(rx[i].z_mm);
+      resX.push_back(rx[i].residual_um);
+    } else {
+      for (int c = 1; c <= 3; ++c) {
+        residualTable_->setItem(static_cast<int>(i), c, new QTableWidgetItem(QStringLiteral("—")));
+      }
+    }
+    if (hasY) {
+      residualTable_->setItem(static_cast<int>(i), 4,
+                              new QTableWidgetItem(fmtG(ry[i].measured_um)));
+      residualTable_->setItem(static_cast<int>(i), 5,
+                              new QTableWidgetItem(fmtG(ry[i].fitted_um)));
+      residualTable_->setItem(static_cast<int>(i), 6,
+                              new QTableWidgetItem(fmtG(ry[i].residual_um)));
+      zy.push_back(ry[i].z_mm);
+      resY.push_back(ry[i].residual_um);
+    } else {
+      for (int c = 4; c <= 6; ++c) {
+        residualTable_->setItem(static_cast<int>(i), c, new QTableWidgetItem(QStringLiteral("—")));
+      }
+    }
+  }
+
+  if (zx.size() >= 2) {
+    PlotSeries sx;
+    sx.x = zx;
+    sx.y = resX;
+    sx.color = QColor(64, 196, 255);
+    sx.markers = true;
+    sx.legend = QStringLiteral("ΔDx");
+    resSeries.push_back(std::move(sx));
+  }
+  if (zy.size() >= 2) {
+    PlotSeries sy;
+    sy.x = zy;
+    sy.y = resY;
+    sy.color = QColor(120, 220, 140);
+    sy.markers = true;
+    sy.legend = QStringLiteral("ΔDy");
+    resSeries.push_back(std::move(sy));
+  }
+  residualPlot_->setMultiSeries(resSeries, QStringLiteral("残差 residual = 测 − 拟合"),
+                                QStringLiteral("mm"), QStringLiteral("µm"));
+}
+
+void M2ScanDialog::updateResultSummary() {
+  if (!lastResult_.valid) {
+    summaryMx_->setText(QStringLiteral("—"));
+    summaryMy_->setText(QStringLiteral("—"));
+    summaryComb_->setText(QStringLiteral("未拟合"));
+    return;
+  }
+  summaryMx_->setText(QStringLiteral("M² = %1 ± %2\nD0 = %3 µm\nz0 = %4 mm\nzR = %5 mm")
+                          .arg(fmtG(lastResult_.fitX.m2))
+                          .arg(fmtG(lastResult_.fitX.m2Uncertainty, 3))
+                          .arg(fmtG(lastResult_.fitX.waistDiameter_um))
+                          .arg(fmtG(lastResult_.fitX.waistZ_mm))
+                          .arg(fmtG(lastResult_.fitX.rayleighRange_mm)));
+  summaryMy_->setText(QStringLiteral("M² = %1 ± %2\nD0 = %3 µm\nz0 = %4 mm\nzR = %5 mm")
+                          .arg(fmtG(lastResult_.fitY.m2))
+                          .arg(fmtG(lastResult_.fitY.m2Uncertainty, 3))
+                          .arg(fmtG(lastResult_.fitY.waistDiameter_um))
+                          .arg(fmtG(lastResult_.fitY.waistZ_mm))
+                          .arg(fmtG(lastResult_.fitY.rayleighRange_mm)));
+  summaryComb_->setText(
+      QStringLiteral("M²_c = %1\nrelRMS_X = %2\nrelRMS_Y = %3\nflags: %4")
+          .arg(fmtG(lastResult_.fitCombined.m2))
+          .arg(fmtG(lastResult_.fitX.relativeRms, 3))
+          .arg(fmtG(lastResult_.fitY.relativeRms, 3))
+          .arg(QString::fromStdString(
+              beam::core::describeQualityFlags(lastResult_.fitX.qualityFlags |
+                                               lastResult_.fitY.qualityFlags))));
 }
 
 std::vector<beam::core::M2ScanPoint> M2ScanDialog::collectPoints() const {
@@ -268,6 +557,7 @@ void M2ScanDialog::addPoint() {
   p.valid = p.diameterX_um > 0.0 && p.diameterY_um > 0.0;
   points_.push_back(p);
   refreshTable();
+  updateDzPlots();
 }
 
 void M2ScanDialog::addFromSeed() {
@@ -299,13 +589,18 @@ void M2ScanDialog::removeSelected() {
     }
   }
   refreshTable();
+  updateDzPlots();
 }
 
 void M2ScanDialog::clearPoints() {
   points_.clear();
   lastResult_ = {};
   refreshTable();
-  dzPlot_->clearProfile();
+  dzPlotX_->clearProfile();
+  dzPlotY_->clearProfile();
+  residualPlot_->clearProfile();
+  residualTable_->setRowCount(0);
+  updateResultSummary();
   resultLabel_->setText(QStringLiteral("已清空。"));
 }
 
@@ -329,6 +624,7 @@ void M2ScanDialog::generatePlan() {
     msg += QStringLiteral(", …");
   }
   resultLabel_->setText(msg);
+  viewTabs_->setCurrentIndex(2);
 }
 
 void M2ScanDialog::runSimulatedScan() {
@@ -347,7 +643,9 @@ void M2ScanDialog::runSimulatedScan() {
   points_ = session.points;
   lastResult_ = session.full;
   refreshTable();
-  updateDzPlot();
+  updateDzPlots();
+  updateResultSummary();
+  viewTabs_->setCurrentIndex(0);
 
   if (!session.valid) {
     resultLabel_->setText(QStringLiteral("仿真扫描拟合失败：%1")
@@ -374,7 +672,9 @@ void M2ScanDialog::runSimulatedScan() {
 
 void M2ScanDialog::runFit() {
   lastResult_ = beam::core::analyzeM2Scan(collectPoints(), wavelengthSpin_->value());
-  updateDzPlot();
+  updateDzPlots();
+  updateResultSummary();
+  viewTabs_->setCurrentIndex(0);
   if (!lastResult_.valid) {
     resultLabel_->setText(QStringLiteral("拟合失败：%1")
                               .arg(QString::fromStdString(lastResult_.message)));
@@ -392,17 +692,23 @@ void M2ScanDialog::runFit() {
               .arg(lastResult_.fitY.m2Uncertainty, 0, 'g', 3)
               .arg(QString::fromStdString(
                   beam::core::describeQualityFlags(lastResult_.fitY.qualityFlags)));
-  text += QStringLiteral("M²_comb = %1  relRMS=%2")
+  text += QStringLiteral("M²_comb = %1  relRMS=%2  残差点数 X=%3 Y=%4")
               .arg(lastResult_.fitCombined.m2, 0, 'g', 4)
-              .arg(lastResult_.fitCombined.relativeRms, 0, 'g', 3);
+              .arg(lastResult_.fitCombined.relativeRms, 0, 'g', 3)
+              .arg(lastResult_.fitX.residuals.size())
+              .arg(lastResult_.fitY.residuals.size());
   resultLabel_->setText(text);
 }
 
-void M2ScanDialog::exportMarkdown() {
+bool M2ScanDialog::ensureFit() {
   if (!lastResult_.valid) {
     runFit();
   }
-  if (!lastResult_.valid) {
+  return lastResult_.valid;
+}
+
+void M2ScanDialog::exportMarkdown() {
+  if (!ensureFit()) {
     return;
   }
   const QString path = QFileDialog::getSaveFileName(
@@ -421,10 +727,7 @@ void M2ScanDialog::exportMarkdown() {
 }
 
 void M2ScanDialog::exportJson() {
-  if (!lastResult_.valid) {
-    runFit();
-  }
-  if (!lastResult_.valid) {
+  if (!ensureFit()) {
     return;
   }
   const QString path = QFileDialog::getSaveFileName(
@@ -443,10 +746,7 @@ void M2ScanDialog::exportJson() {
 }
 
 void M2ScanDialog::exportDzCsv() {
-  if (!lastResult_.valid) {
-    runFit();
-  }
-  if (!lastResult_.valid) {
+  if (!ensureFit()) {
     return;
   }
   const QString path = QFileDialog::getSaveFileName(
@@ -462,6 +762,59 @@ void M2ScanDialog::exportDzCsv() {
   }
   out << beam::core::formatDzCurveCsv(lastResult_);
   resultLabel_->setText(resultLabel_->text() + QStringLiteral("\n已导出: %1").arg(path));
+}
+
+void M2ScanDialog::exportResidualsCsv() {
+  if (!ensureFit()) {
+    return;
+  }
+  const QString path = QFileDialog::getSaveFileName(
+      this, QStringLiteral("导出残差 CSV"), QStringLiteral("m2_residuals.csv"),
+      QStringLiteral("CSV (*.csv)"));
+  if (path.isEmpty()) {
+    return;
+  }
+  beam::io::ExportMeta meta;
+  meta.note = "Beam Analyzer M2 residuals";
+  if (!beam::io::exportM2ResidualsCsv(path.toStdString(), lastResult_, meta)) {
+    QMessageBox::warning(this, QStringLiteral("导出失败"), QStringLiteral("无法写入文件。"));
+    return;
+  }
+  resultLabel_->setText(resultLabel_->text() + QStringLiteral("\n已导出残差: %1").arg(path));
+  viewTabs_->setCurrentIndex(1);
+}
+
+void M2ScanDialog::exportReportBundle() {
+  if (!ensureFit()) {
+    return;
+  }
+  const QString prefix = QFileDialog::getSaveFileName(
+      this, QStringLiteral("导出报告包（选择前缀）"), QStringLiteral("m2_report"),
+      QStringLiteral("Prefix (*)"));
+  if (prefix.isEmpty()) {
+    return;
+  }
+  beam::io::ExportMeta meta;
+  meta.note = "Beam Analyzer M2 report bundle";
+  const std::string base = prefix.toStdString();
+  const bool okMd = beam::io::exportM2ReportMarkdown(base + ".md", lastResult_, meta);
+  const bool okJson = beam::io::exportM2ReportJson(base + ".json", lastResult_, meta);
+  const bool okRes = beam::io::exportM2ResidualsCsv(base + "_residuals.csv", lastResult_, meta);
+  std::ofstream dz(base + "_dz.csv");
+  const bool okDz = static_cast<bool>(dz);
+  if (okDz) {
+    dz << beam::core::formatDzCurveCsv(lastResult_);
+  }
+  if (!(okMd && okJson && okRes && okDz)) {
+    QMessageBox::warning(this, QStringLiteral("导出部分失败"),
+                         QStringLiteral("部分文件未能写入，请检查路径权限。"));
+  } else {
+    QMessageBox::information(
+        this, QStringLiteral("报告包"),
+        QStringLiteral("已写出：\n%1.md\n%1.json\n%1_dz.csv\n%1_residuals.csv").arg(prefix));
+  }
+  resultLabel_->setText(resultLabel_->text() +
+                        QStringLiteral("\n已导出报告包前缀: %1").arg(prefix));
 }
 
 }  // namespace beam::ui
