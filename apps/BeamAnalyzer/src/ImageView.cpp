@@ -28,7 +28,7 @@ void ImageView::clearFrame() {
   image_ = {};
   frameW_ = frameH_ = 0;
   clear();
-  setText(QStringLiteral("请打开 CSV 或加载模拟帧"));
+  setText(QStringLiteral("打开图像/CSV、拖放文件，或连接模拟相机"));
 }
 
 void ImageView::setInteractionMode(InteractionMode mode) {

@@ -16,6 +16,10 @@ add_executable(BeamAnalyzer
   src/ProfilePlot.hpp
   src/M2ScanDialog.cpp
   src/M2ScanDialog.hpp
+  src/Theme.cpp
+  src/Theme.hpp
+  src/MetricsPanel.cpp
+  src/MetricsPanel.hpp
 )
 
 target_link_libraries(BeamAnalyzer

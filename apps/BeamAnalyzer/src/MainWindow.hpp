@@ -10,26 +10,33 @@
 
 #include "FalseColor.hpp"
 #include "ImageView.hpp"
+#include "Theme.hpp"
 
 #include <QMainWindow>
 #include <QImage>
 
+#include <deque>
 #include <memory>
 #include <optional>
 #include <vector>
 
 class QLabel;
 class QComboBox;
-class QTextEdit;
 class QAction;
 class QDoubleSpinBox;
 class QCheckBox;
 class QPushButton;
 class QTimer;
+class QSlider;
+class QDockWidget;
+class QMenu;
+class QDragEnterEvent;
+class QDropEvent;
 
 namespace beam::ui {
 
 class ProfilePlot;
+class MetricsPanel;
 
 class MainWindow final : public QMainWindow {
   Q_OBJECT
@@ -37,14 +44,23 @@ class MainWindow final : public QMainWindow {
   explicit MainWindow(QWidget* parent = nullptr);
   ~MainWindow() override;
 
+ protected:
+  void dragEnterEvent(QDragEnterEvent* event) override;
+  void dropEvent(QDropEvent* event) override;
+
  private slots:
+  void openFile();
   void openCsv();
+  void openImage();
+  void openRecentFile();
+  void clearRecentFiles();
   void loadSimulatedFrame();
   void exportJson();
   void exportCsv();
   void exportPower();
   void exportHProfile();
   void exportVProfile();
+  void exportAnnotatedImage();
   void onColorMapChanged(int index);
   void onRoiModeToggled(bool on);
   void onClearRoi();
@@ -56,6 +72,8 @@ class MainWindow final : public QMainWindow {
   void openM2Scan();
   void saveSettings();
   void loadSettings();
+  void toggleTheme();
+  void setTheme(AppTheme theme);
 
   void refreshCameraList();
   void onCameraConnect();
@@ -64,10 +82,17 @@ class MainWindow final : public QMainWindow {
   void onCameraControlsChanged();
   void onSoftwareTrigger();
   void onLiveTick();
+  void onFrameScrub(int index);
 
  private:
   void rebuildUi();
-  void applyFrame(beam::core::BeamFrame frame, const QString& sourceLabel);
+  void rebuildRecentMenu();
+  void addRecentFile(const QString& path);
+  bool loadPath(const QString& path);
+  bool loadCsvPath(const QString& path);
+  bool loadImagePath(const QString& path);
+  void applyFrame(beam::core::BeamFrame frame, const QString& sourceLabel,
+                  bool pushHistory = true);
   void refreshAnalysis();
   void refreshImage();
   void refreshProfiles();
@@ -78,9 +103,13 @@ class MainWindow final : public QMainWindow {
   [[nodiscard]] beam::camera::CameraControls readCameraControls() const;
   void applyCameraControlsToUi(const beam::camera::CameraControls& c);
   void setCameraUiConnected(bool connected);
+  void updateStatusBarDetails();
 
   ImageView* imageView_ = nullptr;
+  MetricsPanel* metricsPanel_ = nullptr;
+  QDockWidget* metricsDock_ = nullptr;
   QLabel* statusLabel_ = nullptr;
+  QLabel* statusMetricsBrief_ = nullptr;
   QComboBox* colorMapBox_ = nullptr;
   QComboBox* backgroundBox_ = nullptr;
   QDoubleSpinBox* bgConstantSpin_ = nullptr;
@@ -88,12 +117,16 @@ class MainWindow final : public QMainWindow {
   QDoubleSpinBox* exposureSpin_ = nullptr;
   QDoubleSpinBox* wavelengthSpin_ = nullptr;
   QCheckBox* useRoiCheck_ = nullptr;
-  QTextEdit* metricsView_ = nullptr;
   ProfilePlot* hProfilePlot_ = nullptr;
   ProfilePlot* vProfilePlot_ = nullptr;
   QAction* exportJsonAction_ = nullptr;
   QAction* exportCsvAction_ = nullptr;
+  QAction* exportImageAction_ = nullptr;
   QAction* roiModeAction_ = nullptr;
+  QAction* themeAction_ = nullptr;
+  QMenu* recentMenu_ = nullptr;
+  QSlider* frameScrubber_ = nullptr;
+  QLabel* frameScrubLabel_ = nullptr;
 
   QComboBox* cameraSourceBox_ = nullptr;
   QPushButton* cameraConnectBtn_ = nullptr;
@@ -117,8 +150,15 @@ class MainWindow final : public QMainWindow {
   int crossY_ = -1;
   QString sourcePath_;
   ColorMap colorMap_ = ColorMap::FalseColor;
+  AppTheme theme_ = AppTheme::Dark;
   std::unique_ptr<beam::camera::ICamera> activeCamera_;
   std::vector<beam::camera::CameraInfo> discoveredCameras_;
+  QStringList recentFiles_;
+  std::deque<beam::core::BeamFrame> frameHistory_;
+  std::deque<QString> frameHistoryLabels_;
+  static constexpr int kMaxHistory = 120;
+  bool scrubbing_ = false;
+  bool liveActive_ = false;
 };
 
 }  // namespace beam::ui
