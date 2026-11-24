@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.21)
-project(BeamAnalyzer VERSION 0.2.0 LANGUAGES CXX)
+project(BeamAnalyzer VERSION 0.3.0 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -8,6 +8,8 @@ set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
 option(BEAM_BUILD_APP "Build Qt BeamAnalyzer GUI" ON)
 option(BEAM_BUILD_TESTS "Build unit tests" ON)
+# Optional soft dependency for UVC path — off by default so CI needs no OpenCV.
+option(BEAM_ENABLE_OPENCV "Enable OpenCV VideoCapture UVC backend" OFF)
 
 add_subdirectory(libs/core)
 add_subdirectory(libs/io)
@@ -20,4 +22,6 @@ endif()
 if(BEAM_BUILD_TESTS)
   enable_testing()
   add_subdirectory(tests/core)
+  add_subdirectory(tests/camera)
 endif()
+

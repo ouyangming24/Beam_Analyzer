@@ -19,9 +19,11 @@
 #include <QPushButton>
 #include <QScrollArea>
 #include <QSettings>
+#include <QSignalBlocker>
 #include <QSplitter>
 #include <QStatusBar>
 #include <QTextEdit>
+#include <QTimer>
 #include <QToolBar>
 #include <QVBoxLayout>
 #include <QWidget>
@@ -40,14 +42,16 @@ QString fmt(double v, int digits = 4) {
 }  // namespace
 
 MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
-  setWindowTitle(QStringLiteral("Beam Analyzer — Phase 2"));
-  resize(1280, 820);
+  setWindowTitle(QStringLiteral("Beam Analyzer — Phase 3"));
+  resize(1320, 860);
+  beam::camera::registerAllBuiltInBackends();
   rebuildUi();
-  simCamera_ = beam::camera::createSimulatedCamera(160, 120, 5.0);
+  refreshCameraList();
   loadSettings();
 }
 
 MainWindow::~MainWindow() {
+  onCameraDisconnect();
   saveSettings();
 }
 
@@ -118,6 +122,75 @@ void MainWindow::rebuildUi() {
   auto* right = new QWidget;
   auto* rightLayout = new QVBoxLayout(right);
 
+  auto* camBox = new QGroupBox(QStringLiteral("相机采集"));
+  auto* camForm = new QFormLayout(camBox);
+
+  cameraSourceBox_ = new QComboBox;
+  camForm->addRow(QStringLiteral("源"), cameraSourceBox_);
+
+  auto* camBtnRow = new QHBoxLayout;
+  cameraConnectBtn_ = new QPushButton(QStringLiteral("连接"));
+  cameraDisconnectBtn_ = new QPushButton(QStringLiteral("断开"));
+  auto* refreshCamBtn = new QPushButton(QStringLiteral("刷新"));
+  connect(cameraConnectBtn_, &QPushButton::clicked, this, &MainWindow::onCameraConnect);
+  connect(cameraDisconnectBtn_, &QPushButton::clicked, this, &MainWindow::onCameraDisconnect);
+  connect(refreshCamBtn, &QPushButton::clicked, this, &MainWindow::refreshCameraList);
+  camBtnRow->addWidget(cameraConnectBtn_);
+  camBtnRow->addWidget(cameraDisconnectBtn_);
+  camBtnRow->addWidget(refreshCamBtn);
+  camForm->addRow(camBtnRow);
+
+  livePreviewCheck_ = new QCheckBox(QStringLiteral("实时预览"));
+  connect(livePreviewCheck_, &QCheckBox::toggled, this, &MainWindow::onLivePreviewToggled);
+  camForm->addRow(livePreviewCheck_);
+
+  camExposureSpin_ = new QDoubleSpinBox;
+  camExposureSpin_->setRange(1.0, 1e7);
+  camExposureSpin_->setDecimals(1);
+  camExposureSpin_->setValue(1000.0);
+  camExposureSpin_->setSuffix(QStringLiteral(" µs"));
+  connect(camExposureSpin_, QOverload<double>::of(&QDoubleSpinBox::valueChanged),
+          this, &MainWindow::onCameraControlsChanged);
+  camForm->addRow(QStringLiteral("曝光"), camExposureSpin_);
+
+  camGainSpin_ = new QDoubleSpinBox;
+  camGainSpin_->setRange(-20.0, 40.0);
+  camGainSpin_->setDecimals(2);
+  camGainSpin_->setValue(0.0);
+  camGainSpin_->setSuffix(QStringLiteral(" dB"));
+  connect(camGainSpin_, QOverload<double>::of(&QDoubleSpinBox::valueChanged),
+          this, &MainWindow::onCameraControlsChanged);
+  camForm->addRow(QStringLiteral("增益"), camGainSpin_);
+
+  camFpsSpin_ = new QDoubleSpinBox;
+  camFpsSpin_->setRange(0.1, 120.0);
+  camFpsSpin_->setDecimals(1);
+  camFpsSpin_->setValue(15.0);
+  camFpsSpin_->setSuffix(QStringLiteral(" fps"));
+  connect(camFpsSpin_, QOverload<double>::of(&QDoubleSpinBox::valueChanged),
+          this, &MainWindow::onCameraControlsChanged);
+  camForm->addRow(QStringLiteral("目标帧率"), camFpsSpin_);
+
+  triggerModeBox_ = new QComboBox;
+  triggerModeBox_->addItem(QStringLiteral("连续 (FreeRun)"),
+                           static_cast<int>(beam::camera::TriggerMode::FreeRun));
+  triggerModeBox_->addItem(QStringLiteral("软触发 (Software)"),
+                           static_cast<int>(beam::camera::TriggerMode::Software));
+  triggerModeBox_->addItem(QStringLiteral("硬触发 (Hardware)"),
+                           static_cast<int>(beam::camera::TriggerMode::Hardware));
+  connect(triggerModeBox_, QOverload<int>::of(&QComboBox::currentIndexChanged),
+          this, &MainWindow::onCameraControlsChanged);
+  camForm->addRow(QStringLiteral("触发"), triggerModeBox_);
+
+  softwareTriggerBtn_ = new QPushButton(QStringLiteral("软触发一次"));
+  connect(softwareTriggerBtn_, &QPushButton::clicked, this, &MainWindow::onSoftwareTrigger);
+  camForm->addRow(softwareTriggerBtn_);
+
+  rightLayout->addWidget(camBox);
+
+  liveTimer_ = new QTimer(this);
+  connect(liveTimer_, &QTimer::timeout, this, &MainWindow::onLiveTick);
+
   auto* toolsBox = new QGroupBox(QStringLiteral("分析工具"));
   auto* toolsForm = new QFormLayout(toolsBox);
 
@@ -160,7 +233,7 @@ void MainWindow::rebuildUi() {
   exposureSpin_->setSuffix(QStringLiteral(" s"));
   connect(exposureSpin_, QOverload<double>::of(&QDoubleSpinBox::valueChanged),
           this, &MainWindow::onCalibrationChanged);
-  toolsForm->addRow(QStringLiteral("曝光"), exposureSpin_);
+  toolsForm->addRow(QStringLiteral("分析曝光"), exposureSpin_);
 
   wavelengthSpin_ = new QDoubleSpinBox;
   wavelengthSpin_->setRange(1.0, 1e6);
@@ -186,13 +259,13 @@ void MainWindow::rebuildUi() {
   metricsView_ = new QTextEdit;
   metricsView_->setReadOnly(true);
   metricsView_->setFont(QFont(QStringLiteral("Consolas"), 10));
-  metricsView_->setPlainText(QStringLiteral("尚无数据。点击图像设置剖面十字线。"));
+  metricsView_->setPlainText(QStringLiteral("尚无数据。连接模拟相机或打开 CSV。"));
   rightLayout->addWidget(metricsView_, 1);
 
   auto* hint = new QLabel(
-      QStringLiteral("Phase 2：功率标定占位、线剖面、ROI、背景扣除、M² 扫描。\n"
-                     "ICamera 仍为 Null/Simulated；无真实 SDK。\n"
-                     "框选 ROI 后勾选「启用 ROI」；单击图像更新剖面。"));
+      QStringLiteral("Phase 3：相机插件层（GenTL/UVC 桩 + Simulated 实时）。\n"
+                     "未做真实硬件联调；专有 SDK 见 README 插件说明。\n"
+                     "可选源 → 连接 → 实时预览；软触发模式下点「软触发一次」。"));
   hint->setWordWrap(true);
   hint->setStyleSheet(QStringLiteral("color: #666;"));
   rightLayout->addWidget(hint);
@@ -204,6 +277,200 @@ void MainWindow::rebuildUi() {
 
   statusLabel_ = new QLabel(QStringLiteral("就绪"));
   statusBar()->addWidget(statusLabel_, 1);
+
+  setCameraUiConnected(false);
+}
+
+beam::camera::CameraControls MainWindow::readCameraControls() const {
+  beam::camera::CameraControls c;
+  c.exposure_us = camExposureSpin_->value();
+  c.gain_db = camGainSpin_->value();
+  c.targetFps = camFpsSpin_->value();
+  c.trigger = static_cast<beam::camera::TriggerMode>(
+      triggerModeBox_->currentData().toInt());
+  return c;
+}
+
+void MainWindow::applyCameraControlsToUi(const beam::camera::CameraControls& c) {
+  const QSignalBlocker b1(camExposureSpin_);
+  const QSignalBlocker b2(camGainSpin_);
+  const QSignalBlocker b3(camFpsSpin_);
+  const QSignalBlocker b4(triggerModeBox_);
+  camExposureSpin_->setValue(c.exposure_us);
+  camGainSpin_->setValue(c.gain_db);
+  camFpsSpin_->setValue(c.targetFps);
+  const int idx = triggerModeBox_->findData(static_cast<int>(c.trigger));
+  if (idx >= 0) {
+    triggerModeBox_->setCurrentIndex(idx);
+  }
+}
+
+void MainWindow::setCameraUiConnected(bool connected) {
+  cameraConnectBtn_->setEnabled(!connected);
+  cameraDisconnectBtn_->setEnabled(connected);
+  livePreviewCheck_->setEnabled(connected);
+  camExposureSpin_->setEnabled(connected);
+  camGainSpin_->setEnabled(connected);
+  camFpsSpin_->setEnabled(connected);
+  triggerModeBox_->setEnabled(connected);
+  softwareTriggerBtn_->setEnabled(connected);
+  if (!connected) {
+    livePreviewCheck_->setChecked(false);
+  }
+}
+
+void MainWindow::refreshCameraList() {
+  beam::camera::registerAllBuiltInBackends();
+  discoveredCameras_ = beam::camera::CameraRegistry::instance().discoverAll();
+  const QString previous = cameraSourceBox_->currentData().toString();
+  cameraSourceBox_->clear();
+  for (const auto& d : discoveredCameras_) {
+    QString label = QString::fromStdString(d.name);
+    label += QStringLiteral(" [%1]").arg(QString::fromStdString(d.transport));
+    if (!d.available) {
+      label += QStringLiteral(" (不可用)");
+    }
+    cameraSourceBox_->addItem(label, QString::fromStdString(d.id));
+  }
+  const int idx = cameraSourceBox_->findData(previous);
+  if (idx >= 0) {
+    cameraSourceBox_->setCurrentIndex(idx);
+  }
+  statusLabel_->setText(
+      QStringLiteral("已发现 %1 个相机源").arg(discoveredCameras_.size()));
+}
+
+void MainWindow::onCameraConnect() {
+  if (activeCamera_) {
+    onCameraDisconnect();
+  }
+  const QString id = cameraSourceBox_->currentData().toString();
+  if (id.isEmpty()) {
+    QMessageBox::information(this, QStringLiteral("相机"),
+                             QStringLiteral("请先选择相机源。"));
+    return;
+  }
+
+  auto cam = beam::camera::CameraRegistry::instance().create(id.toStdString());
+  if (!cam) {
+    QMessageBox::warning(this, QStringLiteral("相机"),
+                         QStringLiteral("无法创建相机实例。"));
+    return;
+  }
+  const auto info = cam->info();
+  if (!cam->open()) {
+    QMessageBox::warning(
+        this, QStringLiteral("连接失败"),
+        QStringLiteral("%1\n（桩后端在无 SDK/CTI/OpenCV 时无法打开，属预期行为）")
+            .arg(QString::fromStdString(info.name)));
+    return;
+  }
+
+  activeCamera_ = std::move(cam);
+  activeCamera_->setControls(readCameraControls());
+  applyCameraControlsToUi(activeCamera_->controls());
+  setCameraUiConnected(true);
+  statusLabel_->setText(
+      QStringLiteral("已连接: %1").arg(QString::fromStdString(info.name)));
+}
+
+void MainWindow::onCameraDisconnect() {
+  if (liveTimer_) {
+    liveTimer_->stop();
+  }
+  if (livePreviewCheck_) {
+    const QSignalBlocker b(livePreviewCheck_);
+    livePreviewCheck_->setChecked(false);
+  }
+  if (activeCamera_) {
+    activeCamera_->stopAcquisition();
+    activeCamera_->close();
+    activeCamera_.reset();
+  }
+  setCameraUiConnected(false);
+  statusLabel_->setText(QStringLiteral("相机已断开"));
+}
+
+void MainWindow::onLivePreviewToggled(bool on) {
+  if (!activeCamera_) {
+    return;
+  }
+  if (on) {
+    activeCamera_->setControls(readCameraControls());
+    if (!activeCamera_->startAcquisition()) {
+      livePreviewCheck_->setChecked(false);
+      QMessageBox::warning(this, QStringLiteral("实时预览"),
+                           QStringLiteral("无法启动采集。"));
+      return;
+    }
+    const int intervalMs =
+        static_cast<int>(std::max(10.0, 1000.0 / std::max(1.0, camFpsSpin_->value())));
+    liveTimer_->start(intervalMs);
+    statusLabel_->setText(QStringLiteral("实时预览中…"));
+  } else {
+    liveTimer_->stop();
+    activeCamera_->stopAcquisition();
+    statusLabel_->setText(QStringLiteral("实时预览已停止"));
+  }
+}
+
+void MainWindow::onCameraControlsChanged() {
+  if (!activeCamera_ || !activeCamera_->isOpen()) {
+    return;
+  }
+  const auto ctrl = readCameraControls();
+  activeCamera_->setControls(ctrl);
+  softwareTriggerBtn_->setEnabled(ctrl.trigger == beam::camera::TriggerMode::Software ||
+                                  ctrl.trigger == beam::camera::TriggerMode::FreeRun);
+  if (livePreviewCheck_->isChecked()) {
+    const int intervalMs =
+        static_cast<int>(std::max(10.0, 1000.0 / std::max(1.0, ctrl.targetFps)));
+    liveTimer_->setInterval(intervalMs);
+  }
+}
+
+void MainWindow::onSoftwareTrigger() {
+  if (!activeCamera_ || !activeCamera_->isOpen()) {
+    return;
+  }
+  if (!activeCamera_->isAcquiring()) {
+    if (!activeCamera_->startAcquisition()) {
+      QMessageBox::warning(this, QStringLiteral("软触发"),
+                           QStringLiteral("无法启动采集。"));
+      return;
+    }
+  }
+  if (!activeCamera_->softwareTrigger()) {
+    // FreeRun: just grab once below
+  }
+  const auto cap = activeCamera_->grab();
+  if (!cap.ok) {
+    statusLabel_->setText(QString::fromStdString(cap.message));
+    return;
+  }
+  applyFrame(cap.frame,
+             QStringLiteral("<camera:%1>")
+                 .arg(QString::fromStdString(activeCamera_->info().id)));
+}
+
+void MainWindow::onLiveTick() {
+  if (!activeCamera_ || !activeCamera_->isAcquiring()) {
+    return;
+  }
+  const auto mode = static_cast<beam::camera::TriggerMode>(
+      triggerModeBox_->currentData().toInt());
+  if (mode == beam::camera::TriggerMode::Software ||
+      mode == beam::camera::TriggerMode::Hardware) {
+    // Wait for explicit trigger / external line — do not block UI on timeout.
+    return;
+  }
+  const auto cap = activeCamera_->grab();
+  if (!cap.ok) {
+    return;
+  }
+  applyFrame(cap.frame,
+             QStringLiteral("<live:%1>")
+                 .arg(QString::fromStdString(activeCamera_->info().id)));
 }
 
 beam::core::AnalysisPrep MainWindow::currentPrep() const {
@@ -216,12 +483,8 @@ beam::core::AnalysisPrep MainWindow::currentPrep() const {
       backgroundBox_->currentData().toInt());
   prep.background.constantValue = bgConstantSpin_->value();
   prep.background.clipNegative = true;
-  // Background ROI mean: use a thin strip outside analysis ROI if available;
-  // otherwise fall back to full-frame border estimate via BorderMean semantics
-  // when user picks RoiMean without a dedicated bg ROI — use border of full frame.
   if (prep.background.mode == beam::core::BackgroundMode::RoiMean) {
     if (roi_ && !roi_->empty() && rawFrame_) {
-      // Use left 2-column strip of the full frame as placeholder bg ROI
       prep.background.backgroundRoi = {
           0, 0, std::min(1, static_cast<int>(rawFrame_->width) - 1),
           static_cast<int>(rawFrame_->height) - 1};
@@ -263,10 +526,14 @@ void MainWindow::openCsv() {
 }
 
 void MainWindow::loadSimulatedFrame() {
-  if (!simCamera_->isOpen()) {
-    simCamera_->open();
+  auto cam = beam::camera::CameraRegistry::instance().createFromBackend("simulated");
+  if (!cam) {
+    cam = beam::camera::createSimulatedCamera(160, 120, 5.0);
   }
-  const auto cap = simCamera_->grab();
+  if (!cam->isOpen()) {
+    cam->open();
+  }
+  const auto cap = cam->grab();
   if (!cap.ok) {
     QMessageBox::warning(this, QStringLiteral("模拟相机"),
                          QString::fromStdString(cap.message));
@@ -278,8 +545,12 @@ void MainWindow::loadSimulatedFrame() {
 void MainWindow::applyFrame(beam::core::BeamFrame frame, const QString& sourceLabel) {
   rawFrame_ = std::move(frame);
   sourcePath_ = sourceLabel;
-  crossX_ = static_cast<int>(rawFrame_->width / 2);
-  crossY_ = static_cast<int>(rawFrame_->height / 2);
+  if (crossX_ < 0 || crossY_ < 0 ||
+      crossX_ >= static_cast<int>(rawFrame_->width) ||
+      crossY_ >= static_cast<int>(rawFrame_->height)) {
+    crossX_ = static_cast<int>(rawFrame_->width / 2);
+    crossY_ = static_cast<int>(rawFrame_->height / 2);
+  }
   imageView_->setCrosshair(crossX_, crossY_);
   exportJsonAction_->setEnabled(true);
   exportCsvAction_->setEnabled(true);
@@ -307,28 +578,8 @@ void MainWindow::refreshImage() {
   if (!rawFrame_) {
     return;
   }
-  // Display analysis frame when ROI/bg active so the view matches metrics;
-  // otherwise show raw.
-  const beam::core::BeamFrame& shown =
-      (analysisFrame_ && (useRoiCheck_->isChecked() ||
-                          backgroundBox_->currentData().toInt() !=
-                              static_cast<int>(beam::core::BackgroundMode::None)))
-          ? *analysisFrame_
-          : *rawFrame_;
-
   double mn = 0;
   double mx = 0;
-  const QImage img = frameToImage(shown, colorMap_, &mn, &mx);
-  if (img.isNull()) {
-    return;
-  }
-
-  const int targetW = std::max(img.width(), 480);
-  const int targetH = std::max(img.height(), 360);
-  const QImage scaled =
-      img.scaled(targetW, targetH, Qt::KeepAspectRatio, Qt::FastTransformation);
-
-  // When cropped, overlay coords differ — show raw for ROI drawing consistency.
   const QImage displayBase = frameToImage(*rawFrame_, colorMap_, &mn, &mx);
   const QImage displayScaled = displayBase.scaled(
       std::max(displayBase.width(), 480), std::max(displayBase.height(), 360),
@@ -338,7 +589,6 @@ void MainWindow::refreshImage() {
   if (roi_) {
     imageView_->setRoi(roi_);
   }
-  Q_UNUSED(scaled);
 }
 
 void MainWindow::refreshProfiles() {
@@ -347,7 +597,6 @@ void MainWindow::refreshProfiles() {
     vProfilePlot_->clearProfile();
     return;
   }
-  // Profiles from analysis frame when same size; else from raw with crosshair.
   const beam::core::BeamFrame* src = rawFrame_.operator->();
   int cx = crossX_;
   int cy = crossY_;
@@ -355,7 +604,6 @@ void MainWindow::refreshProfiles() {
       analysisFrame_->height == rawFrame_->height) {
     src = analysisFrame_.operator->();
   } else if (useRoiCheck_->isChecked() && roi_ && analysisFrame_) {
-    // Map crosshair into cropped frame if inside ROI
     if (roi_->contains(crossX_, crossY_)) {
       src = analysisFrame_.operator->();
       cx = crossX_ - roi_->x0;
@@ -406,6 +654,14 @@ void MainWindow::refreshMetricsPanel() {
     }
   }
 
+  if (activeCamera_) {
+    const auto c = activeCamera_->controls();
+    text += QStringLiteral("\n— 相机控件 —\n");
+    text += QStringLiteral("触发: %1\n").arg(QString::fromUtf8(beam::camera::toString(c.trigger)));
+    text += QStringLiteral("曝光: %1 µs\n").arg(fmt(c.exposure_us));
+    text += QStringLiteral("增益: %1 dB\n").arg(fmt(c.gain_db));
+  }
+
   if (roi_ && useRoiCheck_->isChecked()) {
     text += QStringLiteral("\nROI: [%1,%2]–[%3,%4]\n")
                 .arg(roi_->x0)
@@ -439,7 +695,7 @@ void MainWindow::exportJson() {
   }
   beam::io::ExportMeta meta;
   meta.sourcePath = sourcePath_.toStdString();
-  meta.note = "Beam Analyzer Phase 2";
+  meta.note = "Beam Analyzer Phase 3";
   if (!beam::io::exportMetricsJson(path.toStdString(), *metrics_, meta)) {
     QMessageBox::warning(this, QStringLiteral("导出失败"), QStringLiteral("无法写入文件。"));
     return;
@@ -459,7 +715,7 @@ void MainWindow::exportCsv() {
   }
   beam::io::ExportMeta meta;
   meta.sourcePath = sourcePath_.toStdString();
-  meta.note = "Beam Analyzer Phase 2";
+  meta.note = "Beam Analyzer Phase 3";
   if (!beam::io::exportMetricsCsv(path.toStdString(), *metrics_, meta)) {
     QMessageBox::warning(this, QStringLiteral("导出失败"), QStringLiteral("无法写入文件。"));
     return;
@@ -481,7 +737,7 @@ void MainWindow::exportPower() {
   }
   beam::io::ExportMeta meta;
   meta.sourcePath = sourcePath_.toStdString();
-  meta.note = "Beam Analyzer Phase 2 power";
+  meta.note = "Beam Analyzer Phase 3 power";
   if (!beam::io::exportPowerJson(path.toStdString(), *power_, currentCalibration(), meta)) {
     QMessageBox::warning(this, QStringLiteral("导出失败"), QStringLiteral("无法写入文件。"));
     return;
@@ -598,6 +854,10 @@ void MainWindow::saveSettings() {
   s.setValue(QStringLiteral("countsToWatts"), countsToWattsSpin_->value());
   s.setValue(QStringLiteral("exposure_s"), exposureSpin_->value());
   s.setValue(QStringLiteral("wavelength_nm"), wavelengthSpin_->value());
+  s.setValue(QStringLiteral("camExposure_us"), camExposureSpin_->value());
+  s.setValue(QStringLiteral("camGain_db"), camGainSpin_->value());
+  s.setValue(QStringLiteral("camFps"), camFpsSpin_->value());
+  s.setValue(QStringLiteral("triggerMode"), triggerModeBox_->currentIndex());
   s.setValue(QStringLiteral("geometry"), saveGeometry());
 }
 
@@ -613,6 +873,10 @@ void MainWindow::loadSettings() {
   countsToWattsSpin_->setValue(s.value(QStringLiteral("countsToWatts"), 0.0).toDouble());
   exposureSpin_->setValue(s.value(QStringLiteral("exposure_s"), 1.0).toDouble());
   wavelengthSpin_->setValue(s.value(QStringLiteral("wavelength_nm"), 1064.0).toDouble());
+  camExposureSpin_->setValue(s.value(QStringLiteral("camExposure_us"), 1000.0).toDouble());
+  camGainSpin_->setValue(s.value(QStringLiteral("camGain_db"), 0.0).toDouble());
+  camFpsSpin_->setValue(s.value(QStringLiteral("camFps"), 15.0).toDouble());
+  triggerModeBox_->setCurrentIndex(s.value(QStringLiteral("triggerMode"), 0).toInt());
   restoreGeometry(s.value(QStringLiteral("geometry")).toByteArray());
 }
 

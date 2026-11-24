@@ -1,5 +1,6 @@
 #pragma once
 
+#include "beam/camera/CameraRegistry.hpp"
 #include "beam/camera/ICamera.hpp"
 #include "beam/core/BeamFrame.hpp"
 #include "beam/core/Iso11146.hpp"
@@ -15,6 +16,7 @@
 
 #include <memory>
 #include <optional>
+#include <vector>
 
 class QLabel;
 class QComboBox;
@@ -22,6 +24,8 @@ class QTextEdit;
 class QAction;
 class QDoubleSpinBox;
 class QCheckBox;
+class QPushButton;
+class QTimer;
 
 namespace beam::ui {
 
@@ -53,6 +57,14 @@ class MainWindow final : public QMainWindow {
   void saveSettings();
   void loadSettings();
 
+  void refreshCameraList();
+  void onCameraConnect();
+  void onCameraDisconnect();
+  void onLivePreviewToggled(bool on);
+  void onCameraControlsChanged();
+  void onSoftwareTrigger();
+  void onLiveTick();
+
  private:
   void rebuildUi();
   void applyFrame(beam::core::BeamFrame frame, const QString& sourceLabel);
@@ -63,6 +75,9 @@ class MainWindow final : public QMainWindow {
   bool ensureMetrics() const;
   [[nodiscard]] beam::core::AnalysisPrep currentPrep() const;
   [[nodiscard]] beam::core::PowerCalibration currentCalibration() const;
+  [[nodiscard]] beam::camera::CameraControls readCameraControls() const;
+  void applyCameraControlsToUi(const beam::camera::CameraControls& c);
+  void setCameraUiConnected(bool connected);
 
   ImageView* imageView_ = nullptr;
   QLabel* statusLabel_ = nullptr;
@@ -80,6 +95,17 @@ class MainWindow final : public QMainWindow {
   QAction* exportCsvAction_ = nullptr;
   QAction* roiModeAction_ = nullptr;
 
+  QComboBox* cameraSourceBox_ = nullptr;
+  QPushButton* cameraConnectBtn_ = nullptr;
+  QPushButton* cameraDisconnectBtn_ = nullptr;
+  QCheckBox* livePreviewCheck_ = nullptr;
+  QDoubleSpinBox* camExposureSpin_ = nullptr;
+  QDoubleSpinBox* camGainSpin_ = nullptr;
+  QDoubleSpinBox* camFpsSpin_ = nullptr;
+  QComboBox* triggerModeBox_ = nullptr;
+  QPushButton* softwareTriggerBtn_ = nullptr;
+  QTimer* liveTimer_ = nullptr;
+
   std::optional<beam::core::BeamFrame> rawFrame_;
   std::optional<beam::core::BeamFrame> analysisFrame_;
   std::optional<beam::core::Iso11146Metrics> metrics_;
@@ -91,7 +117,8 @@ class MainWindow final : public QMainWindow {
   int crossY_ = -1;
   QString sourcePath_;
   ColorMap colorMap_ = ColorMap::FalseColor;
-  std::unique_ptr<beam::camera::ICamera> simCamera_;
+  std::unique_ptr<beam::camera::ICamera> activeCamera_;
+  std::vector<beam::camera::CameraInfo> discoveredCameras_;
 };
 
 }  // namespace beam::ui
