@@ -1,14 +1,21 @@
 #include "beam/core/Iso11146.hpp"
 #include "beam/core/M2Fit.hpp"
+#include "beam/core/M2Scan.hpp"
+#include "beam/core/PowerMetrics.hpp"
+#include "beam/core/Profile.hpp"
+#include "beam/core/Roi.hpp"
 #include "beam/io/CsvImporter.hpp"
 #include "beam/io/ResultExporter.hpp"
 
+#include <algorithm>
 #include <cmath>
 #include <cstdio>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
+#include <iterator>
 #include <string>
+#include <vector>
 
 namespace {
 
@@ -110,6 +117,107 @@ int main() {
                "export JSON");
     expectTrue(beam::io::exportMetricsCsv(metricsCsv.string(), metrics, {"tiny.csv", "test"}),
                "export CSV");
+  }
+
+  // --- Phase 2: background subtraction ---
+  {
+    auto frame = makeGaussianFrame(64, 64, 32.0, 32.0, 6.0, 6.0, 10.0, 1.0, 1.0, 2.0);
+    const double bg = beam::core::estimateBackground(
+        frame, {beam::core::BackgroundMode::Constant, 2.0});
+    expectNear(bg, 2.0, 1e-12, "constant background estimate");
+    auto cleaned = beam::core::subtractBackground(frame, 2.0, true);
+    expectNear(cleaned.at(0, 0), 0.0, 1e-6, "corner near zero after bg subtract");
+    const auto m = computeIso11146(cleaned);
+    expectTrue(m.valid, "metrics after bg subtract");
+  }
+
+  // --- Phase 2: ROI crop ---
+  {
+    auto frame = makeGaussianFrame(100, 100, 50.0, 50.0, 8.0, 8.0, 1.0, 1.0, 1.0);
+    beam::core::RectRoi roi{30, 30, 70, 70};
+    auto cropped = beam::core::cropToRoi(frame, roi);
+    expectTrue(cropped.width == 41 && cropped.height == 41, "ROI crop size 41x41");
+    beam::core::AnalysisPrep prep;
+    prep.useRoi = true;
+    prep.roi = roi;
+    prep.background.mode = beam::core::BackgroundMode::None;
+    auto prepared = beam::core::prepareAnalysisFrame(frame, prep);
+    expectTrue(prepared.width == 41, "prepareAnalysisFrame crops");
+    const auto m = computeIso11146(prepared);
+    expectTrue(m.valid, "ROI metrics valid");
+    expectNear(m.centroidX_um, 20.5, 2.0, "ROI-local centroid near center");
+  }
+
+  // --- Phase 2: power calibration hooks ---
+  {
+    auto frame = makeGaussianFrame(32, 32, 16.0, 16.0, 4.0, 4.0, 1.0, 1.0, 1.0);
+    beam::core::PowerCalibration cal;
+    cal.countsToWatts = 0.0;
+    auto uncal = beam::core::computePowerMetrics(frame, cal);
+    expectTrue(uncal.valid && !uncal.calibrated, "uncalibrated power");
+    expectTrue(uncal.sumCounts > 0.0, "sum counts positive");
+
+    cal.countsToWatts = 2.0;
+    cal.exposure_s = 0.5;
+    auto calp = beam::core::computePowerMetrics(frame, cal);
+    expectTrue(calp.calibrated, "calibrated power");
+    expectNear(calp.power_W, calp.sumCounts * 2.0, 1e-9, "power = sum * scale");
+    expectNear(calp.energy_J, calp.power_W * 0.5, 1e-9, "energy = power * exposure");
+  }
+
+  // --- Phase 2: line profiles ---
+  {
+    auto frame = makeGaussianFrame(40, 40, 20.0, 20.0, 5.0, 5.0, 1.0, 2.0, 2.0);
+    const auto h = beam::core::extractHorizontalProfile(frame, 20);
+    expectTrue(h.valid && h.intensity.size() == 40, "horizontal profile length");
+    expectNear(h.position_um.back(), 39.5 * 2.0, 1e-9, "horizontal end position");
+    // Peak near center
+    const auto peakIt = std::max_element(h.intensity.begin(), h.intensity.end());
+    const auto peakIdx = static_cast<std::size_t>(std::distance(h.intensity.begin(), peakIt));
+    expectTrue(peakIdx >= 18 && peakIdx <= 21, "horizontal peak near center");
+
+    const auto v = beam::core::extractVerticalProfile(frame, 20);
+    expectTrue(v.valid && v.intensity.size() == 40, "vertical profile length");
+
+    const auto line = beam::core::extractLineProfile(frame, 0, 0, 39, 39);
+    expectTrue(line.valid && line.intensity.size() >= 40, "diagonal profile");
+  }
+
+  // --- Phase 2: M² scan + report export ---
+  {
+    const double lambda_nm = 1064.0;
+    const double d0 = 80.0;
+    const double w0 = d0 * 0.5;
+    const double zR_um = 3.14159265358979323846 * w0 * w0 / (lambda_nm * 1e-3);
+    const double zR_mm = zR_um / 1000.0;
+
+    std::vector<beam::core::M2ScanPoint> points;
+    for (double z : {-2.0 * zR_mm, -zR_mm, 0.0, zR_mm, 2.0 * zR_mm}) {
+      const double d = d0 * std::sqrt(1.0 + (z / zR_mm) * (z / zR_mm));
+      points.push_back({z, d, d * 1.02, "synth", true});
+    }
+    const auto scan = beam::core::analyzeM2Scan(points, lambda_nm);
+    expectTrue(scan.valid, "M2 scan valid");
+    expectNear(scan.fitX.m2, 1.0, 0.2, "scan M2_X ≈ 1");
+    expectNear(scan.fitY.m2, 1.0, 0.2, "scan M2_Y ≈ 1");
+
+    const std::string report = beam::core::formatM2Report(scan);
+    expectTrue(report.find("M²") != std::string::npos || report.find("M2") != std::string::npos ||
+                   report.find("m2") != std::string::npos || report.find("Fit") != std::string::npos,
+               "report contains fit section");
+
+    namespace fs = std::filesystem;
+    const fs::path dir = fs::temp_directory_path() / "beam_analyzer_test";
+    fs::create_directories(dir);
+    expectTrue(beam::io::exportM2ReportMarkdown((dir / "m2.md").string(), scan, {"", "test"}),
+               "export M2 markdown");
+    expectTrue(beam::io::exportM2ReportJson((dir / "m2.json").string(), scan, {"", "test"}),
+               "export M2 json");
+
+    const auto h = beam::core::extractHorizontalProfile(
+        makeGaussianFrame(16, 16, 8, 8, 2, 2), 8);
+    expectTrue(beam::io::exportProfileCsv((dir / "prof.csv").string(), h, {"", "p"}),
+               "export profile csv");
   }
 
   if (gFailures != 0) {
