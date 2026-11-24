@@ -2,8 +2,10 @@
 
 #include "beam/camera/CameraRegistry.hpp"
 #include "beam/camera/ICamera.hpp"
+#include "beam/core/Aoi.hpp"
 #include "beam/core/BeamFrame.hpp"
 #include "beam/core/Iso11146.hpp"
+#include "beam/core/Iso13694.hpp"
 #include "beam/core/PowerMetrics.hpp"
 #include "beam/core/Profile.hpp"
 #include "beam/core/Roi.hpp"
@@ -37,12 +39,18 @@ namespace beam::ui {
 
 class ProfilePlot;
 class MetricsPanel;
+class IntensitySurface3D;
+class AnalysisDialog;
 
-class MainWindow final : public QMainWindow {
+ class MainWindow final : public QMainWindow {
   Q_OBJECT
  public:
   explicit MainWindow(QWidget* parent = nullptr);
   ~MainWindow() override;
+
+  /// Load a simulated frame, open analysis, and write PNG shots into outDir.
+  /// Used for demo / CI visual capture (`--capture-shots <dir>`).
+  void captureDemoShots(const QString& outDir);
 
  protected:
   void dragEnterEvent(QDragEnterEvent* event) override;
@@ -65,11 +73,15 @@ class MainWindow final : public QMainWindow {
   void onRoiModeToggled(bool on);
   void onClearRoi();
   void onRoiChanged(beam::core::RectRoi roi);
+  void onAoiChanged(beam::core::AoiRegion aoi);
+  void onAoiShapeChanged(int index);
+  void onAutoAoi();
   void onCrosshairChanged(int x, int y);
   void onBackgroundModeChanged(int index);
   void onCalibrationChanged();
   void onRecompute();
   void openM2Scan();
+  void openAnalysis();
   void saveSettings();
   void loadSettings();
   void toggleTheme();
@@ -117,8 +129,10 @@ class MainWindow final : public QMainWindow {
   void stopHistoryPlayback();
 
   ImageView* imageView_ = nullptr;
+  IntensitySurface3D* surface3d_ = nullptr;
   MetricsPanel* metricsPanel_ = nullptr;
   QDockWidget* metricsDock_ = nullptr;
+  AnalysisDialog* analysisDialog_ = nullptr;
   QLabel* statusLabel_ = nullptr;
   QLabel* statusMetricsBrief_ = nullptr;
   QLabel* statusModeChip_ = nullptr;
@@ -131,6 +145,7 @@ class MainWindow final : public QMainWindow {
   QLabel* colorLegendLabel_ = nullptr;
   QComboBox* colorMapBox_ = nullptr;
   QComboBox* intensityScaleBox_ = nullptr;
+  QComboBox* aoiShapeBox_ = nullptr;
   QPushButton* playBtn_ = nullptr;
   QTimer* playTimer_ = nullptr;
   QComboBox* backgroundBox_ = nullptr;
@@ -164,8 +179,10 @@ class MainWindow final : public QMainWindow {
   std::optional<beam::core::BeamFrame> rawFrame_;
   std::optional<beam::core::BeamFrame> analysisFrame_;
   std::optional<beam::core::Iso11146Metrics> metrics_;
+  std::optional<beam::core::Iso13694Metrics> iso13694_;
   std::optional<beam::core::PowerMetrics> power_;
-  std::optional<beam::core::RectRoi> roi_;
+  std::optional<beam::core::AoiRegion> aoi_;
+  beam::core::AoiShape aoiShape_ = beam::core::AoiShape::Rect;
   beam::core::LineProfile hProfile_;
   beam::core::LineProfile vProfile_;
   int crossX_ = -1;
@@ -183,6 +200,7 @@ class MainWindow final : public QMainWindow {
   bool scrubbing_ = false;
   bool liveActive_ = false;
   bool historyPlaying_ = false;
+  double stabilityT_ = 0.0;
 };
 
 }  // namespace beam::ui

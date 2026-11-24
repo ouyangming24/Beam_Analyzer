@@ -45,8 +45,15 @@ struct BackgroundOptions {
 };
 
 struct AnalysisPrep {
-  RectRoi roi{};               ///< Empty → full frame
+  RectRoi roi{};               ///< Empty → full frame (legacy crop path)
   bool useRoi = false;
+  /// When true with a non-empty aoiBounds, zero outside AOI (no crop) so
+  /// centroids stay in full-frame coordinates — preferred for shaped AOI.
+  bool useAoi = false;
+  RectRoi aoiBounds{};
+  /// 0=Rect, 1=Circle, 2=Ellipse (mirrors AoiShape; kept as int to avoid
+  /// include cycles between Roi.hpp and Aoi.hpp).
+  int aoiShape = 0;
   BackgroundOptions background{};
 };
 
@@ -63,7 +70,7 @@ struct AnalysisPrep {
 /// Crop to ROI (clamped). Pixel sizes preserved. Empty ROI → copy of frame.
 [[nodiscard]] BeamFrame cropToRoi(const BeamFrame& frame, const RectRoi& roi);
 
-/// Full prep: optional crop + background subtraction for analysis.
+/// Full prep: optional AOI mask or crop + background subtraction for analysis.
 [[nodiscard]] BeamFrame prepareAnalysisFrame(const BeamFrame& frame,
                                              const AnalysisPrep& prep);
 

@@ -6,6 +6,10 @@ add_library(beam_core
   src/CausticCsv.cpp
   src/MotorScan.cpp
   src/Roi.cpp
+  src/Aoi.cpp
+  src/Iso13694.cpp
+  src/Stability.cpp
+  src/Divergence.cpp
   src/PowerMetrics.cpp
   src/Profile.cpp
 )

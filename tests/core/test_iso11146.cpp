@@ -1,5 +1,8 @@
+#include "beam/core/Aoi.hpp"
 #include "beam/core/CausticCsv.hpp"
+#include "beam/core/Divergence.hpp"
 #include "beam/core/Iso11146.hpp"
+#include "beam/core/Iso13694.hpp"
 #include "beam/core/M2Fit.hpp"
 #include "beam/core/M2Scan.hpp"
 #include "beam/core/MomentOptions.hpp"
@@ -7,6 +10,7 @@
 #include "beam/core/PowerMetrics.hpp"
 #include "beam/core/Profile.hpp"
 #include "beam/core/Roi.hpp"
+#include "beam/core/Stability.hpp"
 #include "beam/io/CsvImporter.hpp"
 #include "beam/io/ResultExporter.hpp"
 
@@ -374,6 +378,85 @@ int main() {
     const auto sx =
         beam::core::analyzeM2ScanSingleAxis(session.points, cfg.wavelength_nm, false);
     expectTrue(sx.valid && sx.fitX.valid, "single-axis X fit");
+
+    const auto div = beam::core::divergenceFromM2Fit(session.full.fitX, cfg.wavelength_nm);
+    expectTrue(div.valid, "divergence from M2 fit valid");
+    expectTrue(div.bpp_mm_mrad > 0.0, "BPP > 0");
+    expectTrue(div.divergenceHalf_mrad > 0.0, "half-angle > 0");
+  }
+
+  // AOI mask + auto AOI
+  {
+    constexpr double pixel = 5.0;
+    auto frame = makeGaussianFrame(128, 128, 64.0, 64.0, 10.0, 8.0, 1.0, pixel, pixel);
+    const auto m = computeIso11146(frame);
+    expectTrue(m.valid, "AOI source metrics valid");
+    auto aoi = beam::core::autoAoiFromCentroid(m.centroidX_um, m.centroidY_um,
+                                               m.diameterX_um, m.diameterY_um, frame,
+                                               beam::core::AoiShape::Ellipse, 2.0);
+    expectTrue(!aoi.empty(), "auto ellipse AOI non-empty");
+    expectTrue(aoi.containsPx(64.0, 64.0), "AOI contains centroid");
+    const auto masked = beam::core::applyAoiMask(frame, aoi);
+    const auto mm = computeIso11146(masked);
+    expectTrue(mm.valid, "masked AOI metrics valid");
+    expectNear(mm.centroidX_um, m.centroidX_um, 5.0, "AOI centroid X stable");
+
+    beam::core::AnalysisPrep prep;
+    prep.useAoi = true;
+    prep.aoiBounds = aoi.bounds;
+    prep.aoiShape = static_cast<int>(beam::core::AoiShape::Circle);
+    aoi.shape = beam::core::AoiShape::Circle;
+    prep.aoiBounds = beam::core::autoAoiFromCentroid(m.centroidX_um, m.centroidY_um,
+                                                     m.diameterX_um, m.diameterY_um, frame,
+                                                     beam::core::AoiShape::Circle, 2.0)
+                         .bounds;
+    const auto prepared = beam::core::prepareAnalysisFrame(frame, prep);
+    expectTrue(prepared.width == frame.width, "AOI prep keeps frame size");
+    const auto pm = computeIso11146(prepared);
+    expectTrue(pm.valid, "AOI-prepared metrics valid");
+  }
+
+  // ISO 13694 uniformity / flatness on a flat-top-ish plateau
+  {
+    beam::core::BeamFrame flat;
+    flat.resize(40, 40);
+    flat.pixelSizeX_um = 1.0;
+    flat.pixelSizeY_um = 1.0;
+    for (std::size_t y = 0; y < flat.height; ++y) {
+      for (std::size_t x = 0; x < flat.width; ++x) {
+        const bool in = (x >= 10 && x < 30 && y >= 10 && y < 30);
+        flat.intensity[y * flat.width + x] = in ? 100.0 : 0.0;
+      }
+    }
+    const auto u = beam::core::computeIso13694(flat, 0.5);
+    expectTrue(u.valid, "ISO13694 flat-top valid");
+    expectNear(u.flatnessNormalized, 1.0, 0.05, "flat-top flatness≈1");
+    expectNear(u.uniformity, 1.0, 0.05, "flat-top uniformity≈1");
+    expectTrue(u.flatnessFactor >= 0.99, "flatness factor≈1");
+
+    auto gauss = makeGaussianFrame(64, 64, 32.0, 32.0, 8.0, 8.0, 1.0, 1.0, 1.0);
+    const auto g = beam::core::computeIso13694(gauss, 0.5);
+    expectTrue(g.valid, "ISO13694 gaussian valid");
+    expectTrue(g.flatnessNormalized > 0.0 && g.flatnessNormalized < 1.0,
+               "gaussian flatness in (0,1)");
+  }
+
+  // ISO 11670–style stability
+  {
+    std::vector<beam::core::StabilitySample> samples;
+    for (int i = 0; i < 50; ++i) {
+      beam::core::StabilitySample s;
+      s.t_s = 0.1 * i;
+      s.centroidX_um = 100.0 + 2.0 * std::sin(0.2 * i);
+      s.centroidY_um = 50.0 + 1.0 * std::cos(0.2 * i);
+      s.power = 10.0 + 0.1 * std::sin(0.3 * i);
+      samples.push_back(s);
+    }
+    const auto st = beam::core::computeStability(samples, 100.0);
+    expectTrue(st.valid, "stability valid");
+    expectNear(st.meanX_um, 100.0, 1.0, "stability mean X");
+    expectTrue(st.deltaR_um > 0.0, "deltaR > 0");
+    expectTrue(st.pointingStdX_mrad > 0.0, "pointing σx > 0");
   }
 
   if (gFailures != 0) {

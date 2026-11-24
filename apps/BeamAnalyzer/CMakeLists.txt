@@ -12,6 +12,10 @@ add_executable(BeamAnalyzer
   src/FalseColor.hpp
   src/ImageView.cpp
   src/ImageView.hpp
+  src/IntensitySurface3D.cpp
+  src/IntensitySurface3D.hpp
+  src/AnalysisDialog.cpp
+  src/AnalysisDialog.hpp
   src/ProfilePlot.cpp
   src/ProfilePlot.hpp
   src/M2ScanDialog.cpp
