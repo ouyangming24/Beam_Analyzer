@@ -167,6 +167,15 @@ void ImageView::mousePressEvent(QMouseEvent* event) {
     return;
   }
 
+  // Right-click always moves the crosshair (line profiles sync to it), even in
+  // Draw-AOI mode so AOI editing does not trap profile interaction.
+  if (event->button() == Qt::RightButton) {
+    dragMode_ = DragMode::Crosshair;
+    setCrosshair(fp.x(), fp.y());
+    emit crosshairChanged(fp.x(), fp.y());
+    return;
+  }
+
   if (mode_ == InteractionMode::DrawAoi && event->button() == Qt::LeftButton) {
     if (aoi_ && !aoi_->empty() && aoiContainsWidget(event->pos())) {
       dragMode_ = DragMode::Move;
@@ -184,24 +193,28 @@ void ImageView::mousePressEvent(QMouseEvent* event) {
     return;
   }
 
-  if (mode_ == InteractionMode::PickCrosshair && event->button() == Qt::LeftButton) {
-    setCrosshair(fp.x(), fp.y());
-    emit crosshairChanged(fp.x(), fp.y());
-    return;
-  }
-
-  if (event->button() == Qt::LeftButton && mode_ == InteractionMode::None) {
+  if (event->button() == Qt::LeftButton &&
+      (mode_ == InteractionMode::PickCrosshair || mode_ == InteractionMode::None)) {
+    dragMode_ = DragMode::Crosshair;
     setCrosshair(fp.x(), fp.y());
     emit crosshairChanged(fp.x(), fp.y());
   }
 }
 
 void ImageView::mouseMoveEvent(QMouseEvent* event) {
+  const QPoint fp = frameFromWidget(event->pos());
+  if (dragMode_ == DragMode::Crosshair) {
+    if (fp.x() >= 0) {
+      setCrosshair(fp.x(), fp.y());
+      emit crosshairChanged(fp.x(), fp.y());
+    }
+    return;
+  }
+
   if (dragMode_ == DragMode::None || mode_ != InteractionMode::DrawAoi) {
     QLabel::mouseMoveEvent(event);
     return;
   }
-  const QPoint fp = frameFromWidget(event->pos());
   if (fp.x() < 0 || !aoi_) {
     return;
   }
@@ -235,6 +248,12 @@ void ImageView::mouseMoveEvent(QMouseEvent* event) {
 }
 
 void ImageView::mouseReleaseEvent(QMouseEvent* event) {
+  if (dragMode_ == DragMode::Crosshair &&
+      (event->button() == Qt::LeftButton || event->button() == Qt::RightButton)) {
+    dragMode_ = DragMode::None;
+    QLabel::mouseReleaseEvent(event);
+    return;
+  }
   if (dragMode_ != DragMode::None && mode_ == InteractionMode::DrawAoi &&
       event->button() == Qt::LeftButton) {
     dragMode_ = DragMode::None;
@@ -300,6 +319,35 @@ void ImageView::paintBeamOverlay(QPainter& p) const {
   p.restore();
 }
 
+void ImageView::paintOverlayLegend(QPainter& p) const {
+  if (frameW_ <= 0) {
+    return;
+  }
+  QFont f = font();
+  f.setPointSizeF(std::max(8.0, f.pointSizeF() - 0.5));
+  p.setFont(f);
+  const int pad = 8;
+  int y = pad + 12;
+  const int x = pad;
+  auto row = [&](const QColor& color, Qt::PenStyle style, const QString& text) {
+    p.setPen(QPen(color, 2, style));
+    p.drawLine(x, y - 4, x + 16, y - 4);
+    p.setPen(QColor(220, 230, 240));
+    p.drawText(x + 22, y, text);
+    y += 16;
+  };
+  if (showBeamOverlay_) {
+    row(QColor(255, 220, 60), Qt::SolidLine, QStringLiteral("ISO 4σ 光束椭圆"));
+    row(QColor(255, 80, 220), Qt::SolidLine, QStringLiteral("质心"));
+  }
+  if (aoi_ && !aoi_->empty()) {
+    row(QColor(0, 220, 255), Qt::DashLine, QStringLiteral("AOI"));
+  }
+  if (showCrosshair_ && hasCrosshair_) {
+    row(QColor(255, 240, 0), Qt::SolidLine, QStringLiteral("剖面十字线"));
+  }
+}
+
 void ImageView::paintEvent(QPaintEvent* event) {
   QLabel::paintEvent(event);
   if (frameW_ <= 0) {
@@ -326,6 +374,8 @@ void ImageView::paintEvent(QPaintEvent* event) {
     p.setPen(pen);
     p.drawLine(a, b);
   }
+
+  paintOverlayLegend(p);
 }
 
 }  // namespace beam::ui

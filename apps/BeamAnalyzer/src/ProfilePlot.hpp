@@ -39,6 +39,9 @@ class ProfilePlot final : public QWidget {
                       const QString& yLabel = QString());
   /// Draw a horizontal reference at y=0 (residual charts).
   void setZeroLineEnabled(bool enabled);
+  /// Optional vertical band (e.g. AOI extent along the profile axis, µm).
+  void setHighlightRange(double x0, double x1, bool enabled);
+  void clearHighlightRange();
   void clearProfile();
 
  protected:
@@ -52,6 +55,9 @@ class ProfilePlot final : public QWidget {
   QString xLabel_;
   QString yLabel_;
   bool zeroLine_ = false;
+  bool highlightRange_ = false;
+  double highlightX0_ = 0.0;
+  double highlightX1_ = 0.0;
 };
 
 }  // namespace beam::ui

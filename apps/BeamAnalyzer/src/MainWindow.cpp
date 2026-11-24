@@ -12,6 +12,7 @@
 #include "beam/io/ResultExporter.hpp"
 
 #include <QApplication>
+#include <QCoreApplication>
 #include <QCheckBox>
 #include <QComboBox>
 #include <QDir>
@@ -142,7 +143,22 @@ MainWindow::~MainWindow() {
 
 void MainWindow::captureDemoShots(const QString& outDir) {
   QDir().mkpath(outDir);
-  loadSimulatedFrame();
+  // Prefer the 64×64 elliptical Gaussian sample when present (matches typical
+  // offline-file demos); otherwise fall back to the simulated camera frame.
+  const QString sampleCsv =
+      QCoreApplication::applicationDirPath() + QStringLiteral("/samples/data/gaussian_ellipse.csv");
+  if (QFileInfo::exists(sampleCsv)) {
+    if (aoiShapeBox_) {
+      const int ellipseIdx =
+          aoiShapeBox_->findData(static_cast<int>(beam::core::AoiShape::Ellipse));
+      if (ellipseIdx >= 0) {
+        aoiShapeBox_->setCurrentIndex(ellipseIdx);
+      }
+    }
+    loadCsvPath(sampleCsv);
+  } else {
+    loadSimulatedFrame();
+  }
   onAutoAoi();
   // Allow paint/layout to settle.
   QApplication::processEvents();
@@ -152,6 +168,8 @@ void MainWindow::captureDemoShots(const QString& outDir) {
   if (!grab().save(mainPath, "PNG")) {
     statusLabel_->setText(QStringLiteral("截图失败: main"));
   }
+  // Alias used by AOI/profile fix verification.
+  grab().save(outDir + QStringLiteral("/aoi-profile-fix.png"), "PNG");
 
   if (surface3d_) {
     // Emulate a slight rotation so the mountain reads clearly.
@@ -234,6 +252,16 @@ void MainWindow::rebuildUi() {
   roiModeAction_->setCheckable(true);
   connect(roiModeAction_, &QAction::toggled, this, &MainWindow::onRoiModeToggled);
   tool->addAction(QStringLiteral("自动 AOI"), this, &MainWindow::onAutoAoi);
+  tool->addWidget(new QLabel(QStringLiteral(" ×dσ ")));
+  autoAoiScaleSpin_ = new QDoubleSpinBox;
+  autoAoiScaleSpin_->setRange(1.0, 3.0);
+  autoAoiScaleSpin_->setDecimals(2);
+  autoAoiScaleSpin_->setSingleStep(0.1);
+  autoAoiScaleSpin_->setValue(1.5);
+  autoAoiScaleSpin_->setToolTip(
+      QStringLiteral("自动 AOI 倍数：AOI 轴长 ≈ 倍数 × ISO dσ(4σ)。默认 1.5 为紧包围。"));
+  autoAoiScaleSpin_->setMaximumWidth(72);
+  tool->addWidget(autoAoiScaleSpin_);
   tool->addAction(QStringLiteral("清除 AOI"), this, &MainWindow::onClearRoi);
   tool->addSeparator();
   auto* analysisAct =
@@ -386,10 +414,15 @@ void MainWindow::rebuildUi() {
   auto* profilesOuter = new QVBoxLayout(profiles);
   profilesOuter->setContentsMargins(0, 0, 0, 0);
   profilesOuter->setSpacing(0);
-  auto* profilesHeader = new QLabel(QStringLiteral("线剖面 · 水平 / 垂直（与十字线同步）"));
-  profilesHeader->setObjectName(QStringLiteral("SectionHeader"));
-  profilesHeader->setContentsMargins(8, 4, 8, 2);
-  profilesOuter->addWidget(profilesHeader);
+  profilesHeaderLabel_ =
+      new QLabel(QStringLiteral("线剖面 · 水平 / 垂直（随十字线，不随 AOI 拖选）"));
+  profilesHeaderLabel_->setObjectName(QStringLiteral("SectionHeader"));
+  profilesHeaderLabel_->setContentsMargins(8, 4, 8, 2);
+  profilesHeaderLabel_->setToolTip(
+      QStringLiteral("水平/垂直剖面取自黄色十字线所在行/列。"
+                     "拖选 AOI 不会移动十字线；退出「绘制 AOI」后左键拖动，"
+                     "或任意模式下右键，可移动十字线并刷新剖面。青虚线带为 AOI 范围。"));
+  profilesOuter->addWidget(profilesHeaderLabel_);
   auto* profilesRow = new QWidget;
   auto* profilesLayout = new QHBoxLayout(profilesRow);
   profilesLayout->setContentsMargins(0, 0, 0, 0);
@@ -1201,6 +1234,8 @@ void MainWindow::refreshProfiles() {
   int cx = crossX_;
   int cy = crossY_;
   // AOI mask path keeps full-frame size — prefer analysis frame directly.
+  // Profiles still follow the yellow crosshair; when AOI is enabled the
+  // analysis frame zeros outside AOI so the curve shows the masked intensity.
   if (analysisFrame_ && analysisFrame_->width == rawFrame_->width &&
       analysisFrame_->height == rawFrame_->height) {
     src = analysisFrame_.operator->();
@@ -1209,8 +1244,20 @@ void MainWindow::refreshProfiles() {
   const auto cross = beam::core::extractCrosshair(*src, cx, cy);
   hProfile_ = cross.horizontal;
   vProfile_ = cross.vertical;
-  hProfilePlot_->setProfile(hProfile_, QStringLiteral("水平剖面 (行 %1)").arg(cy));
-  vProfilePlot_->setProfile(vProfile_, QStringLiteral("垂直剖面 (列 %1)").arg(cx));
+  hProfilePlot_->setProfile(
+      hProfile_, QStringLiteral("水平剖面 · 十字线行 %1").arg(cy));
+  vProfilePlot_->setProfile(
+      vProfile_, QStringLiteral("垂直剖面 · 十字线列 %1").arg(cx));
+
+  if (useRoiCheck_->isChecked() && aoi_ && !aoi_->empty()) {
+    const double px = std::max(1e-9, rawFrame_->pixelSizeX_um);
+    const double py = std::max(1e-9, rawFrame_->pixelSizeY_um);
+    hProfilePlot_->setHighlightRange(aoi_->bounds.x0 * px, (aoi_->bounds.x1 + 1) * px, true);
+    vProfilePlot_->setHighlightRange(aoi_->bounds.y0 * py, (aoi_->bounds.y1 + 1) * py, true);
+  } else {
+    hProfilePlot_->clearHighlightRange();
+    vProfilePlot_->clearHighlightRange();
+  }
   imageView_->setCrosshair(crossX_, crossY_);
 }
 
@@ -1295,9 +1342,12 @@ void MainWindow::updateStatusStrip() {
     statusStripHint_->setText(QStringLiteral("LIVE · 指标随帧刷新 · 暂停后可用帧播放条回看"));
   } else if (historyPlaying_) {
     statusStripHint_->setText(QStringLiteral("帧历史回放中 · 剖面与指标随 scrub 同步"));
+  } else if (roiModeAction_ && roiModeAction_->isChecked()) {
+    statusStripHint_->setText(
+        QStringLiteral("绘制 AOI 中：左键改 AOI · 右键移十字线刷新剖面 · 黄实线=ISO 4σ 光束椭圆"));
   } else {
     statusStripHint_->setText(
-        QStringLiteral("显示映射（线性/对数）不影响 ISO 数值 · M² 工作站可导入双轴 CSV"));
+        QStringLiteral("剖面随十字线 · 黄实线=ISO 4σ 椭圆 · 青虚线=AOI · 显示映射不影响 ISO 数值"));
   }
 }
 
@@ -1324,18 +1374,21 @@ void MainWindow::updateMeasurementChrome() {
         (colorMap_ == ColorMap::Grayscale) ? QStringLiteral("灰度") : QStringLiteral("假彩色");
     const QString scale =
         (intensityScale_ == IntensityScale::Log) ? QStringLiteral("对数") : QStringLiteral("线性");
+    const bool drawAoi =
+        roiModeAction_ && roiModeAction_->isChecked();
     if (!hasFrame) {
       imageChromeLabel_->setText(
-          QStringLiteral("强度图 · %1 · %2 · 十字线剖面 · 无帧").arg(cmap, scale));
+          QStringLiteral("强度图 · %1 · %2 · 剖面↔十字线 · 无帧").arg(cmap, scale));
     } else {
       imageChromeLabel_->setText(
-          QStringLiteral("强度图 · %1/%2 · %3×%4 · 十字 (%5,%6) · %7")
+          QStringLiteral("强度图 · %1/%2 · %3×%4 · 剖面↔十字(%5,%6)%7 · %8")
               .arg(cmap)
               .arg(scale)
               .arg(rawFrame_->width)
               .arg(rawFrame_->height)
               .arg(crossX_)
               .arg(crossY_)
+              .arg(drawAoi ? QStringLiteral(" · 绘AOI中(右键移十字)") : QString())
               .arg(sourcePath_));
     }
   }
@@ -1512,7 +1565,10 @@ void MainWindow::onRoiModeToggled(bool on) {
   imageView_->setAoiShape(aoiShape_);
   imageView_->setInteractionMode(on ? ImageView::InteractionMode::DrawAoi
                                     : ImageView::InteractionMode::None);
-  statusLabel_->setText(on ? QStringLiteral("拖拽绘制/拖动 AOI…") : QStringLiteral("就绪"));
+  statusLabel_->setText(
+      on ? QStringLiteral("左键绘制/拖动 AOI · 右键移动十字线并刷新剖面")
+         : QStringLiteral("就绪 · 左键拖动十字线刷新剖面（剖面不随 AOI）"));
+  updateMeasurementChrome();
 }
 
 void MainWindow::onClearRoi() {
@@ -1566,12 +1622,14 @@ void MainWindow::onAutoAoi() {
                          QStringLiteral("无法从当前帧估计质心/直径。"));
     return;
   }
+  const double scale = autoAoiScaleSpin_ ? autoAoiScaleSpin_->value() : 1.5;
   aoi_ = beam::core::autoAoiFromCentroid(m.centroidX_um, m.centroidY_um, m.diameterX_um,
-                                         m.diameterY_um, *rawFrame_, aoiShape_, 2.0);
+                                         m.diameterY_um, *rawFrame_, aoiShape_, scale);
   imageView_->setAoi(aoi_);
   useRoiCheck_->setChecked(true);
   onRecompute();
-  statusLabel_->setText(QStringLiteral("已自动放置 AOI（≈ ±dσ）"));
+  statusLabel_->setText(
+      QStringLiteral("已自动放置 AOI（轴长 ≈ %1×dσ，dσ=ISO 4σ）").arg(scale, 0, 'f', 2));
 }
 
 void MainWindow::onCrosshairChanged(int x, int y) {
@@ -1648,6 +1706,8 @@ void MainWindow::saveSettings() {
   s.setValue(QStringLiteral("camFps"), camFpsSpin_->value());
   s.setValue(QStringLiteral("triggerMode"), triggerModeBox_->currentIndex());
   s.setValue(QStringLiteral("theme"), static_cast<int>(theme_));
+  s.setValue(QStringLiteral("autoAoiScale"),
+             autoAoiScaleSpin_ ? autoAoiScaleSpin_->value() : 1.5);
   s.setValue(QStringLiteral("recentFiles"), recentFiles_);
   s.setValue(QStringLiteral("geometry"), saveGeometry());
   s.setValue(QStringLiteral("windowState"), saveState());
@@ -1672,6 +1732,9 @@ void MainWindow::loadSettings() {
   triggerModeBox_->setCurrentIndex(s.value(QStringLiteral("triggerMode"), 0).toInt());
   theme_ = static_cast<AppTheme>(
       s.value(QStringLiteral("theme"), static_cast<int>(AppTheme::Dark)).toInt());
+  if (autoAoiScaleSpin_) {
+    autoAoiScaleSpin_->setValue(s.value(QStringLiteral("autoAoiScale"), 1.5).toDouble());
+  }
   recentFiles_ = s.value(QStringLiteral("recentFiles")).toStringList();
   rebuildRecentMenu();
   restoreGeometry(s.value(QStringLiteral("geometry")).toByteArray());

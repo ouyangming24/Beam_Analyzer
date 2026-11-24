@@ -116,7 +116,7 @@ An AOI restricts which pixels contribute to analysis. Shapes:
 | Circle | \((x-c_x)^2+(y-c_y)^2 \le r^2\) with \(r=\min(r_x,r_y)\) from the bounding box |
 | Ellipse | \(\bigl((x-c_x)/r_x\bigr)^2+\bigl((y-c_y)/r_y\bigr)^2 \le 1\) |
 
-`applyAoiMask` zeros intensity outside the AOI **without cropping**, so centroids remain in full-frame coordinates (µm from the detector origin). Auto-AOI places a box of half-width \(\mathrm{scale}\cdot d_\sigma/2\) about the second-moment centroid (`autoAoiFromCentroid`).
+`applyAoiMask` zeros intensity outside the AOI **without cropping**, so centroids remain in full-frame coordinates (µm from the detector origin). Auto-AOI places a region of half-width \(\mathrm{scale}\cdot d_\sigma/2\) about the second-moment centroid (`autoAoiFromCentroid`), i.e. AOI axis length \(\approx \mathrm{scale}\cdot d_\sigma\) (default \(\mathrm{scale}=1.5\) for a tight enclosure around the ISO 4σ beam ellipse; increase toward 2–3 when more background margin is needed).
 
 Legacy `useRoi` crop path remains for backward-compatible rectangular ROI workflows.
 
