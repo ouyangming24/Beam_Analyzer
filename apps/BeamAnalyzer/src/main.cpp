@@ -8,7 +8,7 @@ int main(int argc, char* argv[]) {
   QApplication app(argc, argv);
   QApplication::setApplicationName(QStringLiteral("BeamAnalyzer"));
   QApplication::setOrganizationName(QStringLiteral("BeamAnalyzer"));
-  QApplication::setApplicationVersion(QStringLiteral("0.5.0"));
+  QApplication::setApplicationVersion(QStringLiteral("0.8.0"));
 
   QString captureDir;
   for (int i = 1; i < argc; ++i) {

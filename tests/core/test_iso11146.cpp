@@ -1,6 +1,8 @@
 #include "beam/core/Aoi.hpp"
+#include "beam/core/BeamWidths.hpp"
 #include "beam/core/CausticCsv.hpp"
 #include "beam/core/Divergence.hpp"
+#include "beam/core/FrameBuffer.hpp"
 #include "beam/core/Iso11146.hpp"
 #include "beam/core/Iso13694.hpp"
 #include "beam/core/M2Fit.hpp"
@@ -469,6 +471,76 @@ int main() {
     expectNear(st.meanX_um, 100.0, 1.0, "stability mean X");
     expectTrue(st.deltaR_um > 0.0, "deltaR > 0");
     expectTrue(st.pointingStdX_mrad > 0.0, "pointing σx > 0");
+  }
+
+  // Knife-edge / percent-energy / encircled power vs D4σ on TEM00
+  {
+    constexpr double pixel = 5.0;
+    constexpr double sigmaPx = 10.0;
+    auto frame = makeGaussianFrame(128, 128, 64.0, 64.0, sigmaPx, sigmaPx, 1.0, pixel, pixel);
+    const auto iso = computeIso11146(frame);
+    const double d4 = 4.0 * sigmaPx * pixel;
+    expectNear(iso.diameterX_um, d4, 4.0, "suite baseline D4σ");
+
+    beam::core::KnifeEdgeOptions k10;
+    k10.preset = beam::core::KnifeEdgePreset::Clip1090;
+    const auto ke = beam::core::computeKnifeEdgeWidths(frame, k10);
+    expectTrue(ke.valid, "knife 10/90 valid");
+    // TEM00: 10/90×1.561 ≈ second-moment width
+    expectNear(ke.widthX_um, d4, 25.0, "knife 10/90 ≈ D4σ (TEM00)");
+    expectNear(ke.widthY_um, d4, 25.0, "knife 10/90 Y ≈ D4σ");
+
+    beam::core::KnifeEdgeOptions k16;
+    k16.preset = beam::core::KnifeEdgePreset::Clip1684;
+    const auto ke16 = beam::core::computeKnifeEdgeWidths(frame, k16);
+    expectTrue(ke16.valid, "knife 16/84 valid");
+    expectNear(ke16.widthX_um, d4, 30.0, "knife 16/84 ≈ D4σ (TEM00)");
+
+    const auto pk = beam::core::computePercentPeakWidths(frame, 0.135, &iso);
+    expectTrue(pk.valid, "percent-peak valid");
+    expectNear(pk.widthX_um, d4, 40.0, "1/e² percent-peak ≈ D4σ");
+
+    const auto pe = beam::core::computePercentEnergyWidths(frame, 0.865, &iso);
+    expectTrue(pe.valid, "percent-energy valid");
+    expectTrue(pe.diameter_um > 0.0, "percent-energy diameter > 0");
+
+    const auto ep = beam::core::computeEncircledPowerDiameter(frame, 0.865, &iso);
+    expectTrue(ep.valid, "encircled power valid");
+    expectNear(ep.diameter_um, d4, 40.0, "EPSA 86.5% ≈ D4σ (TEM00)");
+
+    const auto suite = beam::core::computeBeamWidthSuite(frame, &iso);
+    expectTrue(suite.valid && suite.knife1090.valid, "width suite valid");
+  }
+
+  // Dark subtract + average frames
+  {
+    auto bright = makeGaussianFrame(32, 32, 16.0, 16.0, 4.0, 4.0, 10.0, 1.0, 1.0, 2.0);
+    // Flat dark pedestal (no beam) — subtract should remove the constant offset.
+    auto dark = makeGaussianFrame(32, 32, 16.0, 16.0, 4.0, 4.0, 0.0, 1.0, 1.0, 2.0);
+    for (double& v : dark.intensity) {
+      v = 2.0;
+    }
+    const auto corr = beam::core::subtractDarkFrame(bright, dark, true);
+    expectTrue(corr.at(0, 0) < 1e-4, "dark subtract leaves near-zero corner");
+    expectNear(corr.at(16, 16), bright.at(16, 16) - 2.0, 1e-6, "peak reduced by dark offset");
+
+    // Explicit under-subtract clip: dark above bright → 0
+    auto highDark = dark;
+    for (double& v : highDark.intensity) {
+      v = 1e6;
+    }
+    const auto clipped = beam::core::subtractDarkFrame(bright, highDark, true);
+    expectNear(clipped.at(16, 16), 0.0, 1e-12, "clipNegative forces zero");
+
+    beam::core::FrameBuffer buf(8);
+    buf.setDarkFrame(dark);
+    buf.push(bright);
+    buf.push(bright);
+    const auto avg = buf.averageLast(2);
+    expectTrue(!avg.empty(), "averageLast non-empty");
+    expectNear(avg.at(16, 16), bright.at(16, 16), 1e-9, "average of identical frames");
+    const auto applied = buf.applyDark(bright);
+    expectTrue(applied.at(0, 0) < 1e-4, "buffer applyDark near-zero corner");
   }
 
   if (gFailures != 0) {

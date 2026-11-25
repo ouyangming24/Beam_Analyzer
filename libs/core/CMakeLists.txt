@@ -12,6 +12,8 @@ add_library(beam_core
   src/Divergence.cpp
   src/PowerMetrics.cpp
   src/Profile.cpp
+  src/BeamWidths.cpp
+  src/FrameBuffer.cpp
 )
 
 add_library(beam::core ALIAS beam_core)

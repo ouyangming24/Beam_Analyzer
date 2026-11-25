@@ -24,6 +24,8 @@ add_executable(BeamAnalyzer
   src/Theme.hpp
   src/MetricsPanel.cpp
   src/MetricsPanel.hpp
+  src/CalibrationWizard.cpp
+  src/CalibrationWizard.hpp
 )
 
 target_link_libraries(BeamAnalyzer

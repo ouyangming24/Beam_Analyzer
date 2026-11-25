@@ -14,7 +14,8 @@ Windows 桌面光束分析工具（Qt6 Widgets / C++），方向对标实验室 
 | Phase 4 | 商用级 UI 打磨、图像导入/导出、动态指标、最近文件/拖放 |
 | Phase 5 | 鲁棒二阶矩/噪声、双曲线 \(M^2\)、电机粗扫→精扫、CLI、`docs/ALGORITHM.md` |
 | Phase 6 | 仪器风工作站 UI：双轴焦散/残差、报告包导出、状态栏测量铬 |
-| **Phase 7（当前）** | **科技深色主题、3D 强度曲面、光斑 AOI、Cinogy 式完整分析（ISO 13694/11670 概念 + BPP）** |
+| Phase 7 | 科技深色主题、3D 强度曲面、光斑 AOI、完整分析（ISO 13694/11670 概念 + BPP） |
+| **Phase 8（当前）** | **仪器工作站增强：可保存布局、分组结果表、刀口/%能量宽度、暗场与标定向导、采集平均帧、单帧报告包** |
 
 ## Phase 4 亮点
 
@@ -58,18 +59,27 @@ Windows 桌面光束分析工具（Qt6 Widgets / C++），方向对标实验室 
 - **光斑 AOI**：矩形/圆/椭圆绘制与拖拽、自动 AOI、指标按 AOI 掩膜计算；叠加质心十字与光束椭圆
 - **完整分析窗口**：分组参数表；均匀性/平坦度（ISO 13694 概念）、位置/指向稳定性（ISO 11670 概念）、M² 页补 BPP/发散角
 - 算法在 `libs/core` 并有单测；公式写入 [`docs/ALGORITHM.md`](docs/ALGORITHM.md)
-- **不**复制 Cinogy 资产/品牌，**不**声称认证对等
+- **不**复制商业品牌资产，**不**声称认证对等
+
+### Phase 8 — 商用工作站能力（手册工作流对标，自研实现）
+- **布局预设**：2D / 3D / 剖面 / 结果表 splitter + dock 可命名保存/恢复
+- **结果表**：分组可勾选（峰值、质心、D4σ、刀口、%能量、功率等）+ 可选滚动统计；单位清晰
+- **宽度工具**：刀口 10/90·16/84、%峰值、%能量、包围功率直径（`libs/core` + ctest）
+- **暗场 / 标定**：采集并应用暗场帧；像素尺寸与功率标定向导（模拟相机可用）
+- **采集**：连续 / 单帧 / 平均 N 帧；帧历史批量导出
+- **报告包**：一键 HTML + Markdown + JSON（含图与元数据）；UI 标明「概念实现 / 非正式计量证书」
+- **不**声称与 BeamGage / Cinogy 等同或已认证
 
 ## 仓库结构
 
 ```
 apps/BeamAnalyzer/   Qt6 Widgets 主程序（主题、Dock、拖放、M² 扫描）
 apps/beam_m2_scan/   无 Qt 的 M² 扫描 CLI
-libs/core/           ISO 11146、ROI/背景/噪声、功率、剖面、M²、电机扫描
-libs/io/             CSV + BMP 图像导入/标注导出 + 结果导出
+libs/core/           ISO 11146、宽度工具、暗场/平均缓冲、ROI/AOI、M²、电机扫描
+libs/io/             CSV + 图像导入/标注导出 + 单帧/M² 报告包
 libs/camera/         ICamera、CameraRegistry、GenTL/UVC 桩、Simulated
-docs/ALGORITHM.md    算法与测量实践说明（ISO 11146 概念 + 参考文献）
-tests/core|camera|io 单元测试（含 TEM00 / 非理想 M² / 粗精扫）
+docs/ALGORITHM.md    算法与测量实践说明（ISO 概念 + 刀口/%能量引用）
+tests/core|camera|io 单元测试（含 TEM00 / 刀口 / 暗场 / M²）
 samples/data/        示例 CSV
 ```
 
@@ -155,9 +165,9 @@ ctest --test-dir build-libs --output-on-failure
 
 | 阶段 | 内容 |
 |------|------|
-| Phase 1–5 | 已合入 main |
-| Phase 6 | 仪器风 UI、双轴焦散/残差、报告包 |
-| 后续 | 真机相机/电机联调、标定向导、更完整的序列/报告工作流 |
+| Phase 1–7 | 已合入 main |
+| Phase 8 | 布局/结果表/宽度工具/暗场标定/采集平均/单帧报告包 |
+| 后续 | 真机相机/电机联调、Pass/Fail、多分区、连续日志 |
 
 ## 许可
 

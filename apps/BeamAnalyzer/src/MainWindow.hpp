@@ -4,6 +4,8 @@
 #include "beam/camera/ICamera.hpp"
 #include "beam/core/Aoi.hpp"
 #include "beam/core/BeamFrame.hpp"
+#include "beam/core/BeamWidths.hpp"
+#include "beam/core/FrameBuffer.hpp"
 #include "beam/core/Iso11146.hpp"
 #include "beam/core/Iso13694.hpp"
 #include "beam/core/PowerMetrics.hpp"
@@ -34,6 +36,8 @@ class QDockWidget;
 class QMenu;
 class QDragEnterEvent;
 class QDropEvent;
+class QSpinBox;
+class QSplitter;
 
 namespace beam::ui {
 
@@ -69,6 +73,8 @@ class AnalysisDialog;
   void exportHProfile();
   void exportVProfile();
   void exportAnnotatedImage();
+  void exportReportPackage();
+  void exportFrameHistory();
   void onColorMapChanged(int index);
   void onRoiModeToggled(bool on);
   void onClearRoi();
@@ -82,6 +88,13 @@ class AnalysisDialog;
   void onRecompute();
   void openM2Scan();
   void openAnalysis();
+  void openCalibrationWizard();
+  void captureDarkFrame();
+  void clearDarkFrame();
+  void applyDarkToggled(bool on);
+  void saveLayoutPreset();
+  void restoreLayoutPreset();
+  void resetDefaultLayout();
   void saveSettings();
   void loadSettings();
   void toggleTheme();
@@ -102,6 +115,7 @@ class AnalysisDialog;
   void onFrameNext();
   void onFrameLast();
   void onIntensityScaleChanged(int index);
+  void onCaptureModeChanged(int index);
 
  private:
   void rebuildUi();
@@ -127,6 +141,10 @@ class AnalysisDialog;
   void updateStatusStrip();
   void seekHistory(int index);
   void stopHistoryPlayback();
+  void persistSplitterState();
+  void restoreSplitterState();
+  [[nodiscard]] QByteArray captureLayoutBlob() const;
+  void applyLayoutBlob(const QByteArray& blob);
 
   ImageView* imageView_ = nullptr;
   IntensitySurface3D* surface3d_ = nullptr;
@@ -143,6 +161,7 @@ class AnalysisDialog;
   QLabel* statusStripHint_ = nullptr;
   QLabel* imageChromeLabel_ = nullptr;
   QLabel* colorLegendLabel_ = nullptr;
+  QLabel* disclaimerBanner_ = nullptr;
   QComboBox* colorMapBox_ = nullptr;
   QComboBox* intensityScaleBox_ = nullptr;
   QComboBox* aoiShapeBox_ = nullptr;
@@ -156,6 +175,10 @@ class AnalysisDialog;
   QDoubleSpinBox* exposureSpin_ = nullptr;
   QDoubleSpinBox* wavelengthSpin_ = nullptr;
   QCheckBox* useRoiCheck_ = nullptr;
+  QCheckBox* applyDarkCheck_ = nullptr;
+  QLabel* darkStatusLabel_ = nullptr;
+  QComboBox* captureModeBox_ = nullptr;
+  QSpinBox* averageNSpin_ = nullptr;
   ProfilePlot* hProfilePlot_ = nullptr;
   ProfilePlot* vProfilePlot_ = nullptr;
   QAction* exportJsonAction_ = nullptr;
@@ -166,6 +189,9 @@ class AnalysisDialog;
   QMenu* recentMenu_ = nullptr;
   QSlider* frameScrubber_ = nullptr;
   QLabel* frameScrubLabel_ = nullptr;
+  QSplitter* mainSplit_ = nullptr;
+  QSplitter* leftSplit_ = nullptr;
+  QSplitter* viewSplit_ = nullptr;
 
   QComboBox* cameraSourceBox_ = nullptr;
   QPushButton* cameraConnectBtn_ = nullptr;
@@ -183,16 +209,24 @@ class AnalysisDialog;
   std::optional<beam::core::Iso11146Metrics> metrics_;
   std::optional<beam::core::Iso13694Metrics> iso13694_;
   std::optional<beam::core::PowerMetrics> power_;
+  std::optional<beam::core::BeamWidthSuite> widths_;
   std::optional<beam::core::AoiRegion> aoi_;
   beam::core::AoiShape aoiShape_ = beam::core::AoiShape::Rect;
   beam::core::LineProfile hProfile_;
   beam::core::LineProfile vProfile_;
+  beam::core::FrameBuffer darkBuffer_{1};
+  std::vector<beam::core::BeamFrame> averageAccum_;
   int crossX_ = -1;
   int crossY_ = -1;
   QString sourcePath_;
+  QString sampleName_;
+  QString operatorName_;
+  QString deviceId_;
+  QString calibrationId_;
   ColorMap colorMap_ = ColorMap::FalseColor;
   IntensityScale intensityScale_ = IntensityScale::Linear;
   AppTheme theme_ = AppTheme::Dark;
+  beam::core::CaptureMode captureMode_ = beam::core::CaptureMode::Continuous;
   std::unique_ptr<beam::camera::ICamera> activeCamera_;
   std::vector<beam::camera::CameraInfo> discoveredCameras_;
   QStringList recentFiles_;
@@ -202,6 +236,7 @@ class AnalysisDialog;
   bool scrubbing_ = false;
   bool liveActive_ = false;
   bool historyPlaying_ = false;
+  bool applyDark_ = false;
   double stabilityT_ = 0.0;
 };
 

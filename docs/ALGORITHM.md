@@ -170,21 +170,76 @@ With an effective focal length \(f\) (mm), angular pointing spreads are
 
 **References (concepts):** ISO 11670, *… Test methods for laser beam parameters — Beam positional stability*.
 
-## 9. What this is / is not
+## 9. Alternative beam-width tools (laboratory concepts)
 
-- **Is:** Open, documented ISO-concept second moments + hyperbolic \(M^2\) + AOI masking + ISO 13694/11670–style engineering metrics + configurable coarse/fine scan hooks suitable for engineering use and unit testing.
-- **Is not:** A claim of accredited ISO 11146 / 13694 / 11670 certification, nor a dump of any commercial beam-profiler source code or brand assets. Normative purchases of ISO standards remain the user’s responsibility for compliance work.
+These supplement \(D4\sigma\) for engineering comparison. They are **not** substitutes for ISO second-moment propagation ratios unless shown equivalent for the mode under test.
 
-## 10. Source map
+### 9.1 Knife-edge simulation
+
+Form 1D projections \(P_x(x)=\sum_y I(x,y)\) and \(P_y(y)=\sum_x I(x,y)\). Build the cumulative power and locate clip levels \(f_\mathrm{lo}\) and \(f_\mathrm{hi}\) of the total. Reported width:
+
+\[
+W = M\cdot(x_\mathrm{hi}-x_\mathrm{lo})\cdot p
+\]
+
+with pixel pitch \(p\) and multiplier \(M\).
+
+| Preset | \(f_\mathrm{lo}\)/\(f_\mathrm{hi}\) | \(M\) | Notes |
+|--------|-------------------------------------|-------|-------|
+| 10/90 | 0.10 / 0.90 | 1.561 | Siegman, Sasnett, Johnston (IEEE JQE 1991) TEM00-compatible |
+| 16/84 | 0.16 / 0.84 | 2.0 | Common ISO-practice knife-edge clip pair |
+| Programmable | user | user | Advanced tuning |
+
+API: `computeKnifeEdgeWidths` / `KnifeEdgeOptions` in `BeamWidths.hpp`.
+
+### 9.2 Percent of peak (1D through centroid)
+
+On the centroid row/column, count the span of pixels with \(I\ge\eta\,I_\mathrm{peak}\). Default \(\eta=0.135\) (≈ \(1/e^2\)); \(\eta=0.5\) → FWHM. API: `computePercentPeakWidths`.
+
+### 9.3 Percent of total energy
+
+Sort pixel energies descending until the cumulative reaches fraction \(f\) of total power (default \(f=0.865\)). That pixel intensity is the clip level; widths follow the centroid-line span above the clip. Equivalent diameter from the area of all pixels above the clip:
+
+\[
+D=2\sqrt{A/\pi}
+\]
+
+API: `computePercentEnergyWidths`.
+
+### 9.4 Encircled power (EPSA / power-in-the-bucket)
+
+Binary-search a circular aperture about the centroid until enclosed power equals fraction \(f\) (default 0.865). Diameter \(D=2r\). API: `computeEncircledPowerDiameter`.
+
+**References (concepts):** ISO 11146 family (second moments / moving-slit guidance); ISO 13694 (power density / clip-level practice); Siegman et al., knife-edge clip levels (IEEE JQE 27(4), 1991).
+
+### 9.5 Dark-frame subtraction & frame averaging
+
+\[
+I'(x,y)=\max\bigl(0,\,I(x,y)-I_\mathrm{dark}(x,y)\bigr),\qquad
+\bar I=\frac1N\sum_{k=1}^{N}I_k
+\]
+
+API: `subtractDarkFrame`, `FrameBuffer` (`FrameBuffer.hpp`).
+
+## 10. What this is / is not
+
+- **Is:** Open, documented ISO-concept second moments + hyperbolic \(M^2\) + AOI masking + ISO 13694/11670–style engineering metrics + knife-edge/%-energy/encircled-power tools + configurable coarse/fine scan hooks suitable for engineering use and unit testing.
+- **Is not:** A claim of accredited ISO 11146 / 13694 / 11670 certification, nor equivalence to any commercial beam-profiler brand, nor a dump of proprietary source code or brand assets. Normative purchases of ISO standards remain the user’s responsibility for compliance work.
+- UI copy marks results as **概念实现 / 非正式计量证书** (conceptual implementation / not a metrology certificate).
+
+## 11. Source map
 
 | Component | Headers / sources |
 |-----------|-------------------|
 | Moments + noise | `Iso11146.hpp`, `MomentOptions.hpp`, `Roi.hpp` |
 | AOI shapes / mask | `Aoi.hpp` / `Aoi.cpp` |
+| Width tools (KE / %E / EPSA) | `BeamWidths.hpp` / `BeamWidths.cpp` |
+| Dark / average buffer | `FrameBuffer.hpp` / `FrameBuffer.cpp` |
 | Uniformity / flatness | `Iso13694.hpp` / `Iso13694.cpp` |
 | Stability | `Stability.hpp` / `Stability.cpp` |
 | Divergence / BPP | `Divergence.hpp` / `Divergence.cpp` |
 | \(M^2\) fit | `M2Fit.hpp` / `M2Fit.cpp` |
 | Multi-axis scan result | `M2Scan.hpp` / `M2Scan.cpp` |
 | Motor plan + session | `MotorScan.hpp` / `MotorScan.cpp` |
+| Frame analysis report | `libs/io` `exportFrameAnalysis*` |
 | CLI | `apps/beam_m2_scan` |
